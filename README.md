@@ -44,14 +44,15 @@ npx agent-rule-cli --root /path/to/project
 
 ## 开发
 
-源码按职责拆在 `src/sections/`，发布入口仍是根目录的 `agent-rules-init.cjs`。修改源码片段后运行：
+源码按职责拆在 `src/`，发布入口是根目录的 `agent-rules-init.cjs`。入口文件只负责加载 `src/cli.cjs` 并执行，核心规则判定逻辑可从独立模块直接单测。
+
+修改源码后运行：
 
 ```bash
-npm run build
 npm test
 ```
 
-`npm pack` / `npm publish` 前会自动 build，确保分发文件是最新的单文件版本。
+当前 npm 包会随 CLI 一起发布 `src/` 和 `agent-rules-templates/`，不需要构建步骤。发布前建议运行 `npm pack --dry-run` 确认包内文件。
 
 ## 发布
 

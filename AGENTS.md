@@ -7,5 +7,6 @@
 
 ## 源码与构建
 
-- 维护源码优先修改 `src/sections/*.cjs`，不要直接把根目录 `agent-rules-init.cjs` 当作唯一源码长期编辑。
-- 根目录 `agent-rules-init.cjs` 是由 `npm run build` 拼出的单文件分发入口；修改源码片段后必须运行 `npm run build` 和 `npm test`。
+- 维护源码优先修改 `src/*.cjs`，根目录 `agent-rules-init.cjs` 只保留为很薄的 npm bin 入口。
+- 当前包采用多文件发布：`agent-rules-init.cjs`、`src/` 和 `agent-rules-templates/` 会一起进入 npm 包；不再使用文本拼接 build。
+- 修改源码后必须运行 `npm test`，发布前建议运行 `npm pack --dry-run` 检查包内文件。

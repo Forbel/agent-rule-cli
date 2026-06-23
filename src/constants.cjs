@@ -1,38 +1,3 @@
-#!/usr/bin/env node
-
-const fs = require('fs')
-const path = require('path')
-const crypto = require('crypto')
-const readline = require('readline')
-const { execFileSync } = require('child_process')
-
-const SCRIPT_DIR = __dirname
-const PACKAGE = require('./package.json')
-const COMMAND = 'npx agent-rule-cli'
-const SHARED_TEMPLATE_DIR = path.join(SCRIPT_DIR, 'agent-rules-templates', 'shared')
-const args = process.argv.slice(2)
-const rootArgIndex = args.indexOf('--root')
-if (rootArgIndex >= 0 && (!args[rootArgIndex + 1] || args[rootArgIndex + 1].startsWith('-'))) {
-  process.stderr.write('错误：--root 后需要提供项目目录。\n')
-  process.exit(1)
-}
-const ROOT = path.resolve(rootArgIndex >= 0 ? args[rootArgIndex + 1] : process.cwd())
-const RULE_DIR = path.join(ROOT, '.agent-rules')
-const VERIFY_ONLY = args.includes('--verify')
-const STRICT = args.includes('--strict')
-const NON_INTERACTIVE = args.includes('--defaults')
-const SHOW_HELP = args.includes('--help') || args.includes('-h')
-const NOW = new Date()
-const VERIFIED_AT = NOW.toISOString().slice(0, 10)
-const TIMESTAMP = NOW.toISOString().replace(/[-:]/g, '').replace(/\..+/, '')
-const EXISTING_MANIFEST = (() => {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(RULE_DIR, 'project-facts.json'), 'utf8'))
-  } catch {
-    return null
-  }
-})()
-
 const MODULES = {
   architecture: '架构与目录',
   codeQuality: '代码质量与复用',
@@ -149,30 +114,12 @@ const BUSINESS_CONTRACT_FACTS = {
   business: ['policy.businessRuleSource', 'policy.highRiskDomains', 'policy.businessEnums']
 }
 
-const facts = []
-const answers = {}
-const moduleChoices = {}
-let rl
-
-const GENERATED_ARTIFACTS = [
-  'AGENTS.md',
-  '.agent-rules/project-index.md',
-  '.agent-rules/project-summary.md',
-  '.agent-rules/project-architecture.md',
-  '.agent-rules/project-code-quality.md',
-  '.agent-rules/project-code-inventory.md',
-  '.agent-rules/project-reuse-candidates.md',
-  '.agent-rules/project-ui-rules.md',
-  '.agent-rules/project-api-error-handling.md',
-  '.agent-rules/project-backend-api-contracts.md',
-  '.agent-rules/project-backend-data-persistence.md',
-  '.agent-rules/project-backend-auth-security.md',
-  '.agent-rules/project-backend-jobs-messaging.md',
-  '.agent-rules/project-backend-observability.md',
-  '.agent-rules/project-state-data-flow.md',
-  '.agent-rules/project-security-performance.md',
-  '.agent-rules/project-testing-quality-gates.md',
-  '.agent-rules/project-git-delivery.md',
-  '.agent-rules/project-business-rules.md',
-  '.agent-rules/project-domain-map.md'
-]
+module.exports = {
+  MODULES,
+  PROJECT_SCOPES,
+  COMMON_SHARED_TEMPLATES,
+  FRONTEND_SHARED_TEMPLATES,
+  BACKEND_SHARED_TEMPLATES,
+  COVERAGE_CATALOG,
+  BUSINESS_CONTRACT_FACTS
+}

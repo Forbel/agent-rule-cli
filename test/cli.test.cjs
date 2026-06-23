@@ -7,6 +7,8 @@ const { spawnSync } = require('child_process')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const CLI = path.join(REPO_ROOT, 'agent-rules-init.cjs')
+const { calculateManifestModule } = require('../src/verify-core.cjs')
+const { COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS } = require('../src/constants.cjs')
 
 const tests = []
 
@@ -93,6 +95,31 @@ test('prints help', () => {
   assertIncludes(result.outputText, 'npx agent-rule-cli', 'help output')
 })
 
+test('unit tests manifest coverage calculation without running CLI', () => {
+  const manifest = {
+    modules: {},
+    facts: [
+      { id: 'project.name', module: 'architecture', value: 'Demo', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'project.description', module: 'architecture', value: 'Demo project', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'project.kind', module: 'architecture', value: 'existing', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'project.scope', module: 'architecture', value: 'frontend', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'stack.technologies', module: 'architecture', value: 'Vue', status: 'confirmed', source: 'package.json:vue', verifiedAt: '2026-06-23' },
+      { id: 'policy.directoryBoundaries', module: 'architecture', value: '遵循现有目录边界', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'policy.newDirectories', module: 'architecture', value: '新增目录需确认', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'policy.featureBoundary', module: 'architecture', value: '按业务域划分', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' },
+      { id: 'project.outputLanguage', module: 'architecture', value: '中文', status: 'user-confirmed', source: 'test', verifiedAt: '2026-06-23' }
+    ]
+  }
+
+  const result = calculateManifestModule('architecture', manifest, { COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS })
+
+  assert(result.status === 'configured', `architecture should be configured, got ${result.status}`)
+  assert(result.missing.length === 0, `architecture should have no missing coverage, got ${result.missing.join(', ')}`)
+  assert(result.dimensions.strategy === 'configured', `strategy should be configured, got ${result.dimensions.strategy}`)
+  assert(result.dimensions.repositoryFacts === 'partial', `repository facts should be partial, got ${result.dimensions.repositoryFacts}`)
+  assert(result.dimensions.businessContracts === 'not-applicable', `business contracts should be not-applicable, got ${result.dimensions.businessContracts}`)
+})
+
 test('generates and verifies a frontend fixture', () => {
   const root = makeTempProject('frontend')
   try {
@@ -116,6 +143,22 @@ test('records non-git repository status clearly', () => {
     const gitRules = fs.readFileSync(path.join(root, '.agent-rules/project-git-delivery.md'), 'utf8')
     assertIncludes(gitRules, '当前目录不是 Git 仓库', 'project git rules')
     assertIncludes(gitRules, 'Git 仓库状态：否', 'project git rules')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('generates mandatory confirmation rule for undefined business semantics', () => {
+  const root = makeTempProject('business-confirmation')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    const index = fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8')
+    const business = fs.readFileSync(path.join(root, '.agent-rules/project-business-rules.md'), 'utf8')
+    assertIncludes(index, '必须先向用户确认', 'project index')
+    assertIncludes(index, '不得根据字段名、页面文案、代码现状或模型常识自行推断', 'project index')
+    assertIncludes(business, '必须先向用户确认', 'project business rules')
     assertVerifyOk(root)
   } finally {
     cleanup(root)
