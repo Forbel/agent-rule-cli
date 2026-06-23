@@ -66,8 +66,17 @@ const GENERATED_ARTIFACTS = [
   '.agent-rules/project-testing-quality-gates.md',
   '.agent-rules/project-git-delivery.md',
   '.agent-rules/project-business-rules.md',
-  '.agent-rules/project-domain-map.md'
+  '.agent-rules/project-domain-map.md',
+  '.agent-rules/semantic-workflow.md'
 ]
+
+// Curated, persistent semantic store. Like project-custom.md it is never
+// overwritten or hash-guarded — AI/maintainers fill it incrementally while
+// fixing bugs, changing requirements or adding modules. Verified for schema,
+// provenance and source drift, not for content stability.
+const SEMANTICS_FILE = '.agent-rules/project-semantics.json'
+const SEMANTIC_STATUSES = new Set(['inferred', 'user-confirmed'])
+const HIGH_RISK_SEMANTICS = ['金额', '权限', '状态', '审核', '支付', '订单', '退款', '删除', '禁用', '库存', '结算', '余额', '优惠']
 
 function note(message) {
   process.stdout.write(`\n\u001b[1;36m${message}\u001b[0m\n`)
@@ -277,7 +286,8 @@ function scanDirectories() {
     'dir.router': ['src/router', 'router', 'routes', 'config/routes'],
     'dir.components': ['src/components', 'components', 'shared/components', 'app/components'],
     'dir.utils': ['src/utils', 'utils', 'lib', 'app/lib', 'src/lib'],
-    'dir.api': ['src/api', 'api', 'src/services', 'services', 'app/services'],
+    'dir.api': ['src/api', 'api', 'src/apis', 'apis', 'src/services', 'services', 'app/services'],
+    'dir.features': ['src/features', 'features', 'src/modules', 'modules', 'app/features'],
     'dir.state': ['src/store', 'store', 'src/stores', 'stores', 'state'],
     'dir.assets': ['src/assets', 'assets', 'public', 'static'],
     'dir.backendEntry': ['server', 'src/server', 'cmd', 'app', 'src/main'],
@@ -458,13 +468,29 @@ function scanApiAndAuth() {
   if (guard) addFact('auth.guardEntry', 'security', guard, 'confirmed', 'filesystem', guard)
 }
 
-function collectDomainMap(pageDir, apiDir) {
+function collectDomainMap(pageDir, apiDir, featureDir) {
   const domains = []
-  if (pageDir && exists(pageDir)) {
-    for (const entry of fs.readdirSync(path.join(ROOT, pageDir), { withFileTypes: true })) {
-      if (entry.isDirectory() && !entry.name.startsWith('.')) domains.push({ name: entry.name, pageRoot: path.join(pageDir, entry.name) })
+  const seen = new Set()
+  const pageExt = /\.(jsx?|tsx?|vue|svelte)$/
+  const addDomain = (name, root, kind) => {
+    const key = `${kind}:${name}`
+    if (seen.has(key)) return
+    seen.add(key)
+    domains.push({ name, root, kind })
+  }
+  if (featureDir && exists(featureDir)) {
+    for (const entry of fs.readdirSync(path.join(ROOT, featureDir), { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) addDomain(entry.name, path.join(featureDir, entry.name), 'feature')
     }
   }
+  if (pageDir && exists(pageDir)) {
+    for (const entry of fs.readdirSync(path.join(ROOT, pageDir), { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name.startsWith('_')) continue
+      if (entry.isDirectory()) addDomain(entry.name, path.join(pageDir, entry.name), 'page')
+      else if (pageExt.test(entry.name)) addDomain(entry.name.replace(pageExt, ''), path.join(pageDir, entry.name), 'page')
+    }
+  }
+  domains.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind.localeCompare(b.kind)))
   const routeFiles = ['src/router/index.js', 'src/router/index.ts', 'routes/index.js', 'config/routes.js'].filter(exists)
   const routePaths = []
   for (const routeFile of routeFiles) {
@@ -472,14 +498,49 @@ function collectDomainMap(pageDir, apiDir) {
     for (const match of source.matchAll(/path\s*:\s*['"](\/[^'"]*)['"]/g)) routePaths.push(match[1])
   }
   const apiFiles = apiDir ? listFiles(apiDir, 3).filter(file => /\.(js|ts|py|go|java|php|rb)$/.test(file)).slice(0, 100) : []
-  return { domains, routePaths: [...new Set(routePaths)], apiFiles, routeFiles }
+
+  // Aggregate features, pages and imported APIs into impact-surface groups so the
+  // rule file can answer "changing this domain touches which files".
+  const apiRefs = apiFiles.map(file => ({ file, ref: file.replace(/\.[^.]+$/, '') }))
+  const linkApis = files => {
+    if (!apiRefs.length) return []
+    const sources = files.filter(file => pageExt.test(file)).slice(0, 40).map(read).join('\n')
+    return [...new Set(apiRefs.filter(({ ref }) => sources.includes(ref)).map(item => item.file))].sort()
+  }
+  const groups = new Map()
+  const ensureGroup = name => {
+    if (!groups.has(name)) groups.set(name, { name, feature: null, pages: [], apis: [] })
+    return groups.get(name)
+  }
+  for (const domain of domains) if (domain.kind === 'feature') ensureGroup(domain.name).feature = domain.root
+  for (const domain of domains) {
+    if (domain.kind !== 'page') continue
+    let key = groups.has(domain.name) ? domain.name : ''
+    if (!key) for (const name of groups.keys()) {
+      if (domain.name.startsWith(`${name}-`) || name.startsWith(`${domain.name}-`)) { key = name; break }
+    }
+    ensureGroup(key || domain.name).pages.push(domain.root)
+  }
+  for (const group of groups.values()) {
+    const files = []
+    if (group.feature) files.push(...listFiles(group.feature, 2))
+    files.push(...group.pages)
+    group.pages.sort()
+    group.apis = linkApis(files)
+  }
+  const impact = [...groups.values()]
+    .filter(group => (group.feature ? 1 : 0) + (group.pages.length ? 1 : 0) + (group.apis.length ? 1 : 0) >= 2)
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  return { domains, routePaths: [...new Set(routePaths)], apiFiles, routeFiles, impact }
 }
 
 function scanDomains() {
   const pageDir = factValue('dir.pages')
   const apiDir = factValue('dir.api')
-  const domainMap = collectDomainMap(pageDir, apiDir)
-  addFact('domain.map', 'business', { domains: domainMap.domains, routePaths: domainMap.routePaths, apiFiles: domainMap.apiFiles }, domainMap.domains.length || domainMap.routePaths.length || domainMap.apiFiles.length ? 'confirmed' : 'undefined', 'repository structure scan', [pageDir, ...domainMap.routeFiles, apiDir].filter(Boolean))
+  const featureDir = factValue('dir.features')
+  const domainMap = collectDomainMap(pageDir, apiDir, featureDir)
+  addFact('domain.map', 'business', { domains: domainMap.domains, routePaths: domainMap.routePaths, apiFiles: domainMap.apiFiles, impact: domainMap.impact }, domainMap.domains.length || domainMap.routePaths.length || domainMap.apiFiles.length ? 'confirmed' : 'undefined', 'repository structure scan', [featureDir, pageDir, ...domainMap.routeFiles, apiDir].filter(Boolean))
   const businessDoc = firstExisting(['BUSINESS_RULES.md', 'docs/business.md', 'docs/business-rules.md', 'docs/domain.md'], 'file')
   if (businessDoc) addFact('business.rulesDocument', 'business', businessDoc, 'confirmed', 'filesystem', businessDoc)
 }
@@ -838,6 +899,16 @@ function ensureCustomRules() {
 - 暂无。`)
 }
 
+function ensureSemanticsStore() {
+  if (exists(SEMANTICS_FILE)) return
+  write(SEMANTICS_FILE, `${JSON.stringify({
+    schemaVersion: 1,
+    description: '语义层：记录代码无法自证的业务语义（状态、枚举、金额、权限、流转等）。由 AI 在修 bug、改需求、加模块时增量补全；高风险语义必须人工确认（status=user-confirmed）。生成器不会覆盖本文件。',
+    updatedAt: NOW.toISOString(),
+    entries: []
+  }, null, 2)}\n`)
+}
+
 function renderIndex() {
   const scope = projectScope()
   const routeLines = [
@@ -861,7 +932,8 @@ function renderIndex() {
   routeLines.push(
     '- 测试、构建、交付：`project-testing-quality-gates.md`、`project-git-delivery.md` 及对应 shared 文件。',
     '- Git：`project-git-delivery.md`、`shared-git-delivery.md`。',
-    '- 业务：`project-business-rules.md`、`project-domain-map.md` 及权威业务文档。',
+    '- 业务：`project-business-rules.md`、`project-domain-map.md`、`project-semantics.json` 及权威业务文档。',
+    '- 业务语义（状态、枚举、金额、权限、流转）：按 `semantic-workflow.md` 执行——先查 `project-semantics.json` 对应域条目，缺失或过期时按任务实际业务整理后写回，高风险语义须人工确认（status=user-confirmed）再据此实现。',
     '- 代码资产、复用判断、抽象和重构审查：`project-code-inventory.md`、`project-reuse-candidates.md`、`project-domain-map.md`、`project-code-quality.md`、`shared-code-quality.md`。',
     '- 规则维护：读取待修改 project 文件、对应 shared 文件、`project-facts.json`、相关事实来源和 `shared-project-requirements-check.md`。'
   )
@@ -943,6 +1015,51 @@ ${renderStatusLines(Object.keys(MODULES))}
 - 先检查规则指定入口和事实来源，再局部搜索。
 - 已确认事实可直接沿用；推断事实需验证；未定义项只在影响当前任务时处理。
 - 新业务语义、高风险冲突和不可逆选择才需要人工确认。`)
+}
+
+function renderSemanticWorkflow() {
+  write('.agent-rules/semantic-workflow.md', `# 语义层增量补全工作流（agent 通用）
+
+本文件是与具体工具无关的过程规范，适用于 Claude Code、Codex、Cursor 等任何读取 \`AGENTS.md\` / 规则文件的 agent。语义层（\`project-semantics.json\`）不一次性补全，而是在每次实际开发时，由 agent 就地整理并写回涉及到的业务语义，逐步收敛。
+
+## 何时执行
+
+修复 bug、调整需求或新增业务模块时，只要改动涉及业务语义（状态流转、枚举、金额、权限、审核、支付、订单等代码无法自证的含义），在动手实现前执行本流程。纯结构性、无业务语义的改动可跳过。
+
+## 步骤
+
+1. **定位影响面**：读 \`project-domain-map.md\`，根据任务找到涉及的域及其关联文件（feature、页面、API）。影响面由目录命名和源码 \`import\` 片段推断，可能漏报（alias 路径、barrel 导出、统一 request 封装）或误报，仅作导航起点，必须结合实际代码核对，不得作为"无需再查"的依据。
+2. **查已有语义**：读 \`project-semantics.json\`，筛出 \`domain\` 命中的条目。
+   - 命中且 \`status=user-confirmed\` 且来源未漂移：直接据此实现。
+   - 缺失、为 \`inferred\`、或被 \`--verify\` 标记来源已变化：进入第 3 步。
+3. **就地整理语义**：基于当前任务掌握的真实业务（真实数据流、接口返回、用户/需求确认的结论），整理出该域缺失的语义，按下方 schema 追加或更新到 \`entries\`。
+   - 来自代码/接口的观察但未经人确认：\`status=inferred\`，\`recordedBy=ai\`。
+   - 已由用户或权威文档确认：\`status=user-confirmed\`。
+   - 每条都要带 \`evidenceRefs\`，指向支撑该语义的真实文件。
+4. **高风险必须确认**：涉及金额、权限、状态流转、审核、支付、订单、退款、删除、禁用等的语义，未经用户明确确认不得标 \`user-confirmed\`，也不得据未确认的推断直接实现高风险逻辑——先向用户确认。
+5. **自检**：运行 \`${COMMAND} --verify\`，确保无语义结构错误；处理"高风险未确认""来源已变化"等警告。
+6. **再实现**：以确认后的语义为准完成代码改动。
+
+## 语义条目 schema（\`project-semantics.json\` 的 \`entries[]\`）
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| \`id\` | 是 | 全局唯一，建议 \`<域>.<主题>\`，如 \`facility-payment.order-status\` |
+| \`domain\` | 是 | 关联的业务域，应出现在 \`project-domain-map.md\` |
+| \`statement\` | 是 | 语义本身，写清取值/约束/流转 |
+| \`status\` | 是 | \`inferred\`（候选）或 \`user-confirmed\`（已确认）|
+| \`verifiedAt\` | 是 | 核验日期 \`YYYY-MM-DD\` |
+| \`risk\` | 否 | 风险标签数组，如 \`["金额","状态"]\`，命中高风险词时触发确认闸门 |
+| \`recordedBy\` | 否 | \`ai\` 或 \`human\` |
+| \`evidenceRefs\` | 否（强烈建议）| \`[{ "path": "...", "sha256": "..." }]\`，来源文件变化时自动标记需复核 |
+| \`title\` / \`sourceTask\` / \`supersedes\` | 否 | 标题、产生该语义的任务、被取代的旧条目 id |
+
+\`project-semantics.json\` 由维护者和 agent 增量维护，生成器不会覆盖；除该文件外的语义判断不得绕过本流程直接写入其他规则文件。
+
+## 各 agent 接入
+
+- 任何读取 \`AGENTS.md → project-index.md\` 的 agent：通过索引"业务语义"路由自动进入本流程，无需额外配置。
+- 需要显式触发器的 agent（如 Claude skill、Cursor rule）：用一个仅指向本文件的薄适配器，不复制流程正文，保持本文件为唯一事实源。`)
 }
 
 function renderProjectRules() {
@@ -1296,9 +1413,35 @@ ${sourceFact('policy.businessEnums', '状态、枚举和权限码来源')}
 
 ${metadata('business')}
 
+## 业务域（features）
+
+${(() => {
+  const features = (domains.domains || []).filter(domain => domain.kind === 'feature')
+  return features.length ? features.map(domain => `- ${domain.name}：\`${domain.root}\``).join('\n') : '- 未检测到独立业务域目录。'
+})()}
+
 ## 页面域
 
-${domains.domains && domains.domains.length ? domains.domains.map(domain => `- ${domain.name}：\`${domain.pageRoot}\``).join('\n') : '- 未检测到页面业务域。'}
+${(() => {
+  const pages = (domains.domains || []).filter(domain => domain.kind === 'page' || !domain.kind)
+  return pages.length ? pages.map(domain => `- ${domain.name}：\`${domain.root || domain.pageRoot}\``).join('\n') : '- 未检测到页面业务域。'
+})()}
+
+## 域关联（影响面）
+
+> 按目录命名和 \`import\` 引用聚合，仅证明文件位置关联，不证明业务语义。修改某个域时应一并核对其关联文件。
+
+${(() => {
+  const impact = domains.impact || []
+  if (!impact.length) return '- 未检测到跨 feature / 页面 / API 的结构关联。'
+  return impact.map(group => {
+    const lines = [`- ${group.name}`]
+    if (group.feature) lines.push(`  - feature：\`${group.feature}\``)
+    if (group.pages && group.pages.length) lines.push(`  - 页面：${group.pages.map(file => `\`${file}\``).join('、')}`)
+    if (group.apis && group.apis.length) lines.push(`  - API：${group.apis.map(file => `\`${file}\``).join('、')}`)
+    return lines.join('\n')
+  }).join('\n')
+})()}
 
 ## 路由入口
 
@@ -1357,6 +1500,74 @@ function calculateManifestModule(module, manifest) {
   return calculateManifestModuleCore(module, manifest, { COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS })
 }
 
+function verifySemantics(manifest) {
+  const errors = []
+  const warnings = []
+  if (!exists(SEMANTICS_FILE)) {
+    warnings.push('缺少 project-semantics.json，语义层没有稳定保留位置。')
+    return { errors, warnings }
+  }
+  let store
+  try {
+    store = JSON.parse(read(SEMANTICS_FILE))
+  } catch {
+    errors.push('project-semantics.json 不是合法 JSON。')
+    return { errors, warnings }
+  }
+  if (store.schemaVersion !== 1) errors.push(`不支持的 semantics schemaVersion：${store.schemaVersion}`)
+  if (!Array.isArray(store.entries)) {
+    errors.push('project-semantics.json 缺少 entries 数组。')
+    return { errors, warnings }
+  }
+  const domainFact = (manifest.facts || []).find(item => item.id === 'domain.map')
+  const knownDomains = new Set()
+  if (domainFact && domainFact.value) {
+    for (const domain of domainFact.value.domains || []) knownDomains.add(domain.name)
+    for (const group of domainFact.value.impact || []) knownDomains.add(group.name)
+  }
+  const seen = new Set()
+  for (const entry of store.entries) {
+    const label = entry && entry.id ? entry.id : '<unknown>'
+    if (!entry || !entry.id || !entry.domain || !entry.statement || !entry.status || !entry.verifiedAt) {
+      errors.push(`语义条目结构不完整：${label}`)
+      continue
+    }
+    if (seen.has(entry.id)) errors.push(`存在重复语义 ID：${entry.id}`)
+    seen.add(entry.id)
+    if (typeof entry.id !== 'string' || typeof entry.domain !== 'string' || typeof entry.statement !== 'string') errors.push(`语义字段类型非法（id/domain/statement 必须是字符串）：${entry.id}`)
+    if (!SEMANTIC_STATUSES.has(entry.status)) errors.push(`语义状态非法：${entry.id} -> ${entry.status}（仅允许 inferred / user-confirmed）`)
+    if (typeof entry.verifiedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.verifiedAt)) errors.push(`语义 verifiedAt 必须是 YYYY-MM-DD：${entry.id} -> ${entry.verifiedAt}`)
+    if (entry.recordedBy !== undefined && !['ai', 'human'].includes(entry.recordedBy)) errors.push(`语义 recordedBy 非法：${entry.id} -> ${entry.recordedBy}`)
+    let riskTags = []
+    if (entry.risk !== undefined) {
+      if (!Array.isArray(entry.risk)) errors.push(`语义 risk 必须是数组：${entry.id}`)
+      else if (!entry.risk.every(tag => typeof tag === 'string')) errors.push(`语义 risk 数组元素必须是字符串：${entry.id}`)
+      else riskTags = entry.risk
+    }
+    if (knownDomains.size && typeof entry.domain === 'string' && !knownDomains.has(entry.domain)) warnings.push(`语义关联的域不在业务域地图中：${entry.id} -> ${entry.domain}`)
+    const highRisk = riskTags.some(tag => HIGH_RISK_SEMANTICS.some(keyword => tag.includes(keyword)))
+    if (highRisk && entry.status !== 'user-confirmed') warnings.push(`高风险语义尚未人工确认：${entry.id}`)
+    if (entry.evidenceRefs !== undefined && !Array.isArray(entry.evidenceRefs)) {
+      errors.push(`语义 evidenceRefs 必须是数组：${entry.id}`)
+      continue
+    }
+    for (const reference of entry.evidenceRefs || []) {
+      if (!reference || typeof reference.path !== 'string') {
+        errors.push(`语义 evidenceRefs 条目必须包含字符串 path：${entry.id}`)
+        continue
+      }
+      if (reference.sha256 !== undefined && typeof reference.sha256 !== 'string') {
+        errors.push(`语义 evidenceRefs 的 sha256 必须是字符串：${entry.id} -> ${reference.path}`)
+        continue
+      }
+      const current = fingerprint(reference.path, 'content')
+      if (!current) warnings.push(`语义来源已不存在，需要复核：${entry.id} -> ${reference.path}`)
+      else if (reference.sha256 && current.sha256 !== reference.sha256) warnings.push(`语义来源已变化，需要复核：${entry.id} -> ${reference.path}`)
+    }
+  }
+  return { errors, warnings }
+}
+
 function verify() {
   const factsFile = path.join(RULE_DIR, 'project-facts.json')
   if (!fs.existsSync(factsFile)) throw new Error('缺少 .agent-rules/project-facts.json，请重新运行初始化器。')
@@ -1406,8 +1617,8 @@ function verify() {
   }
   const domainFact = manifestFact('domain.map')
   if (domainFact) {
-    const currentDomainMap = collectDomainMap(manifestValue('dir.pages', ''), manifestValue('dir.api', ''))
-    const comparable = { domains: currentDomainMap.domains, routePaths: currentDomainMap.routePaths, apiFiles: currentDomainMap.apiFiles }
+    const currentDomainMap = collectDomainMap(manifestValue('dir.pages', ''), manifestValue('dir.api', ''), manifestValue('dir.features', ''))
+    const comparable = { domains: currentDomainMap.domains, routePaths: currentDomainMap.routePaths, apiFiles: currentDomainMap.apiFiles, impact: currentDomainMap.impact }
     if (JSON.stringify(comparable) !== JSON.stringify(domainFact.value)) errors.push('业务域结构已变化，需要重新生成：domain.map')
   }
   const testFilesFact = manifestFact('testing.files')
@@ -1461,6 +1672,9 @@ function verify() {
     implementationGaps.value.forEach(gap => warnings.push(`API 实现差距：${gap}`))
   }
   if (!exists('.agent-rules/project-custom.md')) warnings.push('缺少 project-custom.md，人工规则没有稳定保留位置。')
+  const semantics = verifySemantics(manifest)
+  errors.push(...semantics.errors)
+  warnings.push(...semantics.warnings)
 
   note('规则校验结果')
   errors.forEach(item => process.stdout.write(`错误：${item}\n`))
@@ -1512,10 +1726,12 @@ async function main() {
   cleanupGenerated()
   copyShared()
   ensureCustomRules()
+  ensureSemanticsStore()
   renderAgents()
   renderIndex()
   renderSummary()
   renderProjectRules()
+  renderSemanticWorkflow()
   renderFacts()
 
   note('完成')

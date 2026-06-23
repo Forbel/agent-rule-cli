@@ -3,6 +3,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const crypto = require('crypto')
 const { spawnSync } = require('child_process')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
@@ -130,6 +131,172 @@ test('generates and verifies a frontend fixture', () => {
     assert(fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'frontend project should include UI project rules')
     assert(fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'frontend project should include UI shared rules')
     assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('maps domains from feature dirs, page files, and apis/ plural directory', () => {
+  const root = makeTempProject('domain-map')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
+    // pages as flat files (not subdirectories) plus framework files that must be skipped
+    write(path.join(root, 'pages/_app.js'), 'export default function App() {}\n')
+    write(path.join(root, 'pages/order-detail.js'), 'export default function OrderDetail() {}\n')
+    write(path.join(root, 'pages/ticket.js'), 'export default function Ticket() {}\n')
+    // feature dirs as real business domains
+    mkdirp(path.join(root, 'features/payment'))
+    mkdirp(path.join(root, 'features/refund'))
+    // apis/ plural directory
+    write(path.join(root, 'apis/orders.js'), 'export const getOrders = () => {}\n')
+    write(path.join(root, 'apis/payment.js'), 'export const pay = () => {}\n')
+    generate(root)
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    assertIncludes(map, 'payment：`features/payment`', 'domain map should list feature domains')
+    assertIncludes(map, 'refund：`features/refund`', 'domain map should list feature domains')
+    assertIncludes(map, 'order-detail：`pages/order-detail.js`', 'domain map should list page files, not just subdirectories')
+    assertIncludes(map, '`apis/orders.js`', 'domain map should detect apis/ plural directory')
+    assertIncludes(map, '`apis/payment.js`', 'domain map should detect apis/ plural directory')
+    assert(map.indexOf('_app') < 0, 'framework files starting with _ should be skipped')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('aggregates impact surface from feature/page names and api imports', () => {
+  const root = makeTempProject('impact')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
+    mkdirp(path.join(root, 'features/checkout'))
+    write(path.join(root, 'features/checkout/index.js'), "import { pay } from '../../apis/payment'\n")
+    // page that shares the feature name and imports an api by reference path
+    write(path.join(root, 'pages/checkout.js'), "import { getOrders } from '@/apis/orders'\nexport default function Checkout() {}\n")
+    // prefix-merged pages forming one domain
+    write(path.join(root, 'pages/ticket.js'), "import { listTickets } from '../apis/tickets'\nexport default function Ticket() {}\n")
+    write(path.join(root, 'pages/ticket-transfer.js'), 'export default function Transfer() {}\n')
+    // page with no api import -> excluded from impact section
+    write(path.join(root, 'pages/about.js'), 'export default function About() {}\n')
+    write(path.join(root, 'apis/payment.js'), 'export const pay = () => {}\n')
+    write(path.join(root, 'apis/orders.js'), 'export const getOrders = () => {}\n')
+    write(path.join(root, 'apis/tickets.js'), 'export const listTickets = () => {}\n')
+    generate(root)
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    const impact = map.slice(map.indexOf('## 域关联'))
+    assertIncludes(impact, 'feature：`features/checkout`', 'impact should attach the feature dir')
+    assertIncludes(impact, '`apis/payment.js`', 'impact should link feature-imported api')
+    assertIncludes(impact, '`apis/orders.js`', 'impact should link page-imported api')
+    // ticket and ticket-transfer must merge into one domain by prefix
+    assertIncludes(impact, '`pages/ticket-transfer.js`、`pages/ticket.js`', 'prefix pages should merge into one domain')
+    assert(impact.indexOf('about') < 0, 'pages without cross-source links should be excluded from impact surface')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('generates the agent-agnostic semantic workflow document', () => {
+  const root = makeTempProject('semantic-workflow')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    const wf = path.join(root, '.agent-rules/semantic-workflow.md')
+    assert(fs.existsSync(wf), 'semantic-workflow.md should be generated')
+    const text = fs.readFileSync(wf, 'utf8')
+    assertIncludes(text, 'project-semantics.json', 'workflow should reference the semantic store')
+    assertIncludes(text, 'evidenceRefs', 'workflow should document the entry schema')
+    assertIncludes(text, 'Codex', 'workflow should be framed as agent-agnostic')
+    // index must route business-semantic tasks to the workflow doc
+    assertIncludes(fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8'), 'semantic-workflow.md', 'index should route to the workflow')
+    // tampering with the workflow doc must be caught as artifact drift
+    fs.appendFileSync(wf, '\nmanual drift\n')
+    assertVerifyFails(root, '生成产物已漂移：.agent-rules/semantic-workflow.md')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('persists a curated semantic entry across regeneration and verifies it', () => {
+  const root = makeTempProject('semantics-persist')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
+    mkdirp(path.join(root, 'features/checkout'))
+    write(path.join(root, 'pages/checkout.js'), "import { pay } from '@/apis/payment'\nexport default function Checkout() {}\n")
+    write(path.join(root, 'apis/payment.js'), 'export const pay = () => {}\n')
+    generate(root)
+    const semFile = path.join(root, '.agent-rules/project-semantics.json')
+    assert(fs.existsSync(semFile), 'generation should create project-semantics.json')
+    assert(readJson(semFile).entries.length === 0, 'fresh semantics store should start empty')
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'apis/payment.js'))).digest('hex')
+    writeJson(semFile, {
+      schemaVersion: 1,
+      entries: [{
+        id: 'checkout.payment-flow',
+        domain: 'checkout',
+        statement: '支付成功后才能创建订单',
+        risk: ['金额'],
+        status: 'user-confirmed',
+        recordedBy: 'ai',
+        evidenceRefs: [{ path: 'apis/payment.js', sha256: sha }],
+        verifiedAt: '2026-06-23'
+      }]
+    })
+    assertVerifyOk(root)
+    generate(root) // regeneration must NOT clobber curated semantics
+    assert(readJson(semFile).entries.length === 1, 'regeneration must preserve curated semantics')
+    assert(readJson(semFile).entries[0].id === 'checkout.payment-flow', 'regeneration must preserve the entry content')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('verify flags invalid, duplicate, high-risk-unconfirmed and unknown-domain semantics', () => {
+  const root = makeTempProject('semantics-verify')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    write(path.join(root, 'pages/checkout.js'), 'export default function C() {}\n')
+    generate(root)
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [
+        { id: 'a.amount', domain: 'checkout', statement: '金额含税', risk: ['金额'], status: 'inferred', verifiedAt: '2026-06-23' },
+        { id: 'a.amount', domain: 'checkout', statement: 'duplicate id', status: 'inferred', verifiedAt: '2026-06-23' },
+        { id: 'b.bad', domain: 'checkout', statement: 'x', status: 'guessed', verifiedAt: '2026-06-23' },
+        { id: 'c.ghost', domain: 'no-such-domain', statement: 'y', status: 'user-confirmed', verifiedAt: '2026-06-23' }
+      ]
+    })
+    const result = verify(root)
+    assert(result.status === 1, `verify should exit 1 on semantic schema errors, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '语义状态非法：b.bad', 'verify output')
+    assertIncludes(result.outputText, '存在重复语义 ID：a.amount', 'verify output')
+    assertIncludes(result.outputText, '高风险语义尚未人工确认：a.amount', 'verify output')
+    assertIncludes(result.outputText, '语义关联的域不在业务域地图中：c.ghost', 'verify output')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('verify reports malformed semantics gracefully instead of crashing', () => {
+  const root = makeTempProject('semantics-malformed')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    write(path.join(root, 'pages/checkout.js'), 'export default function C() {}\n')
+    generate(root)
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [
+        { id: 'x.a', domain: 'checkout', statement: 's', status: 'inferred', verifiedAt: '2026/6/23', evidenceRefs: { path: 'pages/checkout.js' } },
+        { id: 'x.b', domain: 'checkout', statement: 's', status: 'inferred', verifiedAt: '2026-06-23', evidenceRefs: [{ sha256: 123 }], risk: [5] }
+      ]
+    })
+    const result = verify(root)
+    assert(result.status === 1, `verify should exit 1 on malformed semantics, got ${result.status}\n${result.outputText}`)
+    assert(!/TypeError|at Object\.|\bat \w+ \(/.test(result.outputText), `verify must not leak a stack trace.\n${result.outputText}`)
+    assertIncludes(result.outputText, 'verifiedAt 必须是 YYYY-MM-DD', 'verify output')
+    assertIncludes(result.outputText, 'evidenceRefs 必须是数组', 'verify output')
+    assertIncludes(result.outputText, 'risk 数组元素必须是字符串', 'verify output')
+    assertIncludes(result.outputText, 'evidenceRefs 条目必须包含字符串 path', 'verify output')
   } finally {
     cleanup(root)
   }
