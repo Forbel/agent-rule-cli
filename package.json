@@ -1,0 +1,33 @@
+{
+  "name": "agent-rule-cli",
+  "version": "0.6.2",
+  "description": "交互式扫描项目并生成可追溯的 AI Agent 项目规则",
+  "keywords": [
+    "agent",
+    "ai",
+    "rules",
+    "agents-md",
+    "cli"
+  ],
+  "bin": {
+    "agent-rule-cli": "agent-rules-init.cjs"
+  },
+  "files": [
+    "agent-rules-init.cjs",
+    "agent-rules-templates"
+  ],
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "start": "node agent-rules-init.cjs",
+    "test": "npm run build && node test/cli.test.cjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test"
+  },
+  "engines": {
+    "node": ">=12"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

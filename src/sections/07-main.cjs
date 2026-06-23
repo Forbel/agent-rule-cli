@@ -1,0 +1,56 @@
+async function main() {
+  if (SHOW_HELP) {
+    process.stdout.write(`${PACKAGE.name} v${PACKAGE.version}\n\n用法：\n  ${COMMAND} [--root <项目目录>]\n  ${COMMAND} --verify [--strict] [--root <项目目录>]\n\n选项：\n  --root       指定目标项目，默认当前目录\n  --verify     检查 schema、coverage、模板、事实来源、产物和过期时间\n  --strict     verify 出现 partial、undefined、过期或其他警告时返回退出码 2\n  --defaults   使用推荐默认值生成，所有未人工确认策略标记为 inferred\n  --help       显示帮助\n`)
+    return
+  }
+  if (!fs.existsSync(ROOT)) throw new Error(`项目目录不存在：${ROOT}`)
+  if (VERIFY_ONLY) return verify()
+
+  note('AI 项目规则脚手架')
+  process.stdout.write(`项目目录：${ROOT}\n`)
+  warn('shared 规则来自固定模板；project 规则由可追溯事实和用户策略生成。')
+  if (!NON_INTERACTIVE) {
+    makeReadline()
+    if (!(await askYesNo('是否继续？', true))) {
+      rl.close()
+      return
+    }
+  }
+
+  scanAll()
+  note('自动扫描摘要')
+  process.stdout.write(`${facts.map(item => `- ${item.id}: ${markdownValue(item.value)}（${item.status}）`).join('\n')}\n`)
+  await collectAnswers()
+  if (rl) rl.close()
+
+  note('模块覆盖状态')
+  process.stdout.write(`${renderStatusLines(Object.keys(MODULES))}\n`)
+  if (!NON_INTERACTIVE) {
+    makeReadline()
+    if (!(await askYesNo('确认备份现有规则并生成？', true))) {
+      rl.close()
+      return
+    }
+    rl.close()
+  }
+
+  backupExisting()
+  fs.mkdirSync(RULE_DIR, { recursive: true })
+  cleanupGenerated()
+  copyShared()
+  ensureCustomRules()
+  renderAgents()
+  renderIndex()
+  renderSummary()
+  renderProjectRules()
+  renderFacts()
+
+  note('完成')
+  process.stdout.write(`已生成规则。摘要：${path.join(RULE_DIR, 'project-summary.md')}\n`)
+  verify()
+}
+
+main().catch(error => {
+  process.stderr.write(`错误：${error.message}\n`)
+  process.exitCode = 1
+})
