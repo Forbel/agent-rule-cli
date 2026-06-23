@@ -131,8 +131,8 @@ function verify() {
   }
   const domainFact = manifestFact('domain.map')
   if (domainFact) {
-    const currentDomainMap = collectDomainMap(manifestValue('dir.pages', ''), manifestValue('dir.api', ''), manifestValue('dir.features', ''))
-    const comparable = { domains: currentDomainMap.domains, routePaths: currentDomainMap.routePaths, apiFiles: currentDomainMap.apiFiles, impact: currentDomainMap.impact }
+    const currentDomainMap = collectDomainMap(manifestValue('dir.pages', ''), manifestValue('dir.api', ''), manifestValue('dir.features', ''), manifestValue('dir.state', ''), manifestValue('dir.components', ''))
+    const comparable = { domains: currentDomainMap.domains, routePaths: currentDomainMap.routePaths, apiFiles: currentDomainMap.apiFiles, impact: currentDomainMap.impact, sharedAssets: currentDomainMap.sharedAssets }
     if (JSON.stringify(comparable) !== JSON.stringify(domainFact.value)) errors.push('业务域结构已变化，需要重新生成：domain.map')
   }
   const testFilesFact = manifestFact('testing.files')

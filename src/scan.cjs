@@ -269,7 +269,7 @@ function scanApiAndAuth() {
   if (guard) addFact('auth.guardEntry', 'security', guard, 'confirmed', 'filesystem', guard)
 }
 
-function collectDomainMap(pageDir, apiDir, featureDir) {
+function collectDomainMap(pageDir, apiDir, featureDir, stateDir, componentsDir) {
   const domains = []
   const seen = new Set()
   const pageExt = /\.(jsx?|tsx?|vue|svelte)$/
@@ -299,18 +299,19 @@ function collectDomainMap(pageDir, apiDir, featureDir) {
     for (const match of source.matchAll(/path\s*:\s*['"](\/[^'"]*)['"]/g)) routePaths.push(match[1])
   }
   const apiFiles = apiDir ? listFiles(apiDir, 3).filter(file => /\.(js|ts|py|go|java|php|rb)$/.test(file)).slice(0, 100) : []
+  const storeFiles = stateDir ? listFiles(stateDir, 3).filter(file => pageExt.test(file)).slice(0, 100) : []
+  const componentFiles = componentsDir ? listFiles(componentsDir, 3).filter(file => pageExt.test(file)).slice(0, 200) : []
 
-  // Aggregate features, pages and imported APIs into impact-surface groups so the
-  // rule file can answer "changing this domain touches which files".
-  const apiRefs = apiFiles.map(file => ({ file, ref: file.replace(/\.[^.]+$/, '') }))
-  const linkApis = files => {
-    if (!apiRefs.length) return []
-    const sources = files.filter(file => pageExt.test(file)).slice(0, 40).map(read).join('\n')
-    return [...new Set(apiRefs.filter(({ ref }) => sources.includes(ref)).map(item => item.file))].sort()
-  }
+  // Aggregate features, pages and imported APIs/stores/components into impact-surface
+  // groups so the rule file can answer "changing this domain touches which files".
+  const refsOf = files => files.map(file => ({ file, ref: file.replace(/\.[^.]+$/, '') }))
+  const apiRefs = refsOf(apiFiles)
+  const storeRefs = refsOf(storeFiles)
+  const componentRefs = refsOf(componentFiles)
+  const matchRefs = (sources, refs) => [...new Set(refs.filter(({ ref }) => sources.includes(ref)).map(item => item.file))].sort()
   const groups = new Map()
   const ensureGroup = name => {
-    if (!groups.has(name)) groups.set(name, { name, feature: null, pages: [], apis: [] })
+    if (!groups.has(name)) groups.set(name, { name, feature: null, pages: [], apis: [], stores: [], components: [] })
     return groups.get(name)
   }
   for (const domain of domains) if (domain.kind === 'feature') ensureGroup(domain.name).feature = domain.root
@@ -327,21 +328,41 @@ function collectDomainMap(pageDir, apiDir, featureDir) {
     if (group.feature) files.push(...listFiles(group.feature, 2))
     files.push(...group.pages)
     group.pages.sort()
-    group.apis = linkApis(files)
+    const sources = files.filter(file => pageExt.test(file)).slice(0, 40).map(read).join('\n')
+    group.apis = matchRefs(sources, apiRefs)
+    group.stores = matchRefs(sources, storeRefs)
+    group.components = matchRefs(sources, componentRefs)
   }
   const impact = [...groups.values()]
-    .filter(group => (group.feature ? 1 : 0) + (group.pages.length ? 1 : 0) + (group.apis.length ? 1 : 0) >= 2)
+    .filter(group => (group.feature ? 1 : 0) + (group.pages.length ? 1 : 0) + (group.apis.length ? 1 : 0) + (group.stores.length ? 1 : 0) + (group.components.length ? 1 : 0) >= 2)
     .sort((a, b) => a.name.localeCompare(b.name))
 
-  return { domains, routePaths: [...new Set(routePaths)], apiFiles, routeFiles, impact }
+  // Reuse candidates = assets referenced by 2+ domains (structural reuse hotspots).
+  const usage = new Map()
+  for (const group of groups.values()) {
+    for (const [kind, files] of [['component', group.components], ['api', group.apis], ['store', group.stores]]) {
+      for (const file of files) {
+        if (!usage.has(file)) usage.set(file, { path: file, kind, usedBy: new Set() })
+        usage.get(file).usedBy.add(group.name)
+      }
+    }
+  }
+  const sharedAssets = [...usage.values()]
+    .filter(asset => asset.usedBy.size >= 2)
+    .map(asset => ({ path: asset.path, kind: asset.kind, usedBy: [...asset.usedBy].sort() }))
+    .sort((a, b) => (b.usedBy.length - a.usedBy.length) || a.path.localeCompare(b.path))
+
+  return { domains, routePaths: [...new Set(routePaths)], apiFiles, routeFiles, impact, sharedAssets }
 }
 
 function scanDomains() {
   const pageDir = factValue('dir.pages')
   const apiDir = factValue('dir.api')
   const featureDir = factValue('dir.features')
-  const domainMap = collectDomainMap(pageDir, apiDir, featureDir)
-  addFact('domain.map', 'business', { domains: domainMap.domains, routePaths: domainMap.routePaths, apiFiles: domainMap.apiFiles, impact: domainMap.impact }, domainMap.domains.length || domainMap.routePaths.length || domainMap.apiFiles.length ? 'confirmed' : 'undefined', 'repository structure scan', [featureDir, pageDir, ...domainMap.routeFiles, apiDir].filter(Boolean))
+  const stateDir = factValue('dir.state')
+  const componentsDir = factValue('dir.components')
+  const domainMap = collectDomainMap(pageDir, apiDir, featureDir, stateDir, componentsDir)
+  addFact('domain.map', 'business', { domains: domainMap.domains, routePaths: domainMap.routePaths, apiFiles: domainMap.apiFiles, impact: domainMap.impact, sharedAssets: domainMap.sharedAssets }, domainMap.domains.length || domainMap.routePaths.length || domainMap.apiFiles.length ? 'confirmed' : 'undefined', 'repository structure scan', [featureDir, pageDir, stateDir, componentsDir, ...domainMap.routeFiles, apiDir].filter(Boolean))
   const businessDoc = firstExisting(['BUSINESS_RULES.md', 'docs/business.md', 'docs/business-rules.md', 'docs/domain.md'], 'file')
   if (businessDoc) addFact('business.rulesDocument', 'business', businessDoc, 'confirmed', 'filesystem', businessDoc)
 }

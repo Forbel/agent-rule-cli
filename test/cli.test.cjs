@@ -195,6 +195,61 @@ test('aggregates impact surface from feature/page names and api imports', () => 
   }
 })
 
+test('links stores/components into impact and derives cross-domain reuse candidates', () => {
+  const root = makeTempProject('reuse')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
+    write(path.join(root, 'components/Card.js'), 'export default function Card() {}\n')
+    write(path.join(root, 'components/SoloBadge.js'), 'export default function SoloBadge() {}\n')
+    write(path.join(root, 'store/cart.js'), 'export const cart = {}\n')
+    write(path.join(root, 'apis/payment.js'), 'export const pay = () => {}\n')
+    write(path.join(root, 'apis/orders.js'), 'export const getOrders = () => {}\n')
+    // two domains both importing the shared Card + cart store
+    write(path.join(root, 'pages/checkout.js'), "import Card from '@/components/Card'\nimport { cart } from '@/store/cart'\nimport { pay } from '../apis/payment'\nexport default function Checkout() {}\n")
+    write(path.join(root, 'pages/orders.js'), "import Card from '@/components/Card'\nimport { cart } from '@/store/cart'\nimport { getOrders } from '../apis/orders'\nexport default function Orders() {}\n")
+    // SoloBadge used by a single domain -> must NOT be a reuse candidate
+    write(path.join(root, 'pages/profile.js'), "import SoloBadge from '@/components/SoloBadge'\nimport { getOrders } from '../apis/orders'\nexport default function Profile() {}\n")
+    generate(root)
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    const impact = map.slice(map.indexOf('## 域关联'))
+    assertIncludes(impact, '状态：`store/cart.js`', 'impact should link imported store slices')
+    assertIncludes(impact, '组件：`components/Card.js`', 'impact should link imported shared components')
+    const reuse = fs.readFileSync(path.join(root, '.agent-rules/project-reuse-candidates.md'), 'utf8')
+    assertIncludes(reuse, '`components/Card.js`（组件，被 2 个域使用', 'reuse index should list components shared across domains')
+    assertIncludes(reuse, '`store/cart.js`（状态，被 2 个域使用', 'reuse index should list stores shared across domains')
+    assert(reuse.indexOf('SoloBadge') < 0, 'assets used by a single domain must not be reuse candidates')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('includes component-only and store-only page domains in impact surface', () => {
+  const root = makeTempProject('impact-asset-only')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'components/Hero.js'), 'export default function Hero() {}\n')
+    write(path.join(root, 'store/session.js'), 'export const session = {}\n')
+    // landing imports only a shared component (no API, no store) -> must still appear
+    write(path.join(root, 'pages/landing.js'), "import Hero from '@/components/Hero'\nexport default function Landing() {}\n")
+    // dashboard imports only a store (no API, no component) -> must still appear
+    write(path.join(root, 'pages/dashboard.js'), "import { session } from '@/store/session'\nexport default function Dashboard() {}\n")
+    // about imports nothing shared -> must stay excluded
+    write(path.join(root, 'pages/about.js'), 'export default function About() {}\n')
+    generate(root)
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    const impact = map.slice(map.indexOf('## 域关联'))
+    assertIncludes(impact, '- landing', 'a page linked only to a component must appear in impact')
+    assertIncludes(impact, '组件：`components/Hero.js`', 'component-only domain should show its component')
+    assertIncludes(impact, '- dashboard', 'a page linked only to a store must appear in impact')
+    assertIncludes(impact, '状态：`store/session.js`', 'store-only domain should show its store')
+    assert(impact.indexOf('- about') < 0, 'a page with no shared linkage must stay excluded')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('generates the agent-agnostic semantic workflow document', () => {
   const root = makeTempProject('semantic-workflow')
   try {

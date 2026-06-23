@@ -306,7 +306,7 @@ function renderSemanticWorkflow() {
 function renderProjectRules() {
   const commands = factValue('testing.commands', [])
   const testFiles = factValue('testing.files', [])
-  const domains = factValue('domain.map', { domains: [], routePaths: [], apiFiles: [] })
+  const domains = factValue('domain.map', { domains: [], routePaths: [], apiFiles: [], impact: [], sharedAssets: [] })
   const scope = projectScope()
   const isBackendScope = scope === 'backend' || scope === 'fullstack'
   const commandLines = commands.length ? commands.map(command => `- \`${command.name}\`：${command.raw || command.source || '检测自项目配置'}；类别：${command.category}；改写源码：${command.writesSource ? '是' : '否'}；写入产物：${command.writesArtifacts ? '是' : '否'}；写入缓存：${command.writesCache ? '是' : '否'}；长期运行：${command.longRunning ? '是' : '否'}；适合自动执行：${command.safeForAutomaticExecution ? '是' : '否'}`).join('\n') : '- 未检测到验证命令。'
@@ -397,8 +397,15 @@ ${sourceFact('state.directory', '状态目录')}`)
   write('.agent-rules/project-reuse-candidates.md', `# 项目复用候选索引
 
 > 最后核验：${VERIFIED_AT}
+> 来源：按 \`import\` 引用统计的跨域共享资产；仅证明被多个域使用，复用前仍需确认语义契合。
 
-暂无已确认候选项。发现重复业务判断、映射、校验、流程或 UI 结构时，应记录位置、语义和暂不抽象原因。`)
+${(() => {
+  const shared = domains.sharedAssets || []
+  if (!shared.length) return '暂无被多个域复用的资产。新增业务判断、映射、校验、流程或 UI 结构前，仍应先查本文件与代码资产索引，发现重复时记录位置、语义和暂不抽象原因。'
+  const label = { component: '组件', api: 'API', store: '状态' }
+  const lines = shared.map(asset => `- \`${asset.path}\`（${label[asset.kind] || asset.kind}，被 ${asset.usedBy.length} 个域使用：${asset.usedBy.join('、')}）`)
+  return `以下资产已被多个域复用，新增同类能力前应优先复用，不要重造：\n\n${lines.join('\n')}`
+})()}`)
 
   if (scope !== 'backend') write('.agent-rules/project-ui-rules.md', `# 项目 UI 规则
 
@@ -680,6 +687,8 @@ ${(() => {
     if (group.feature) lines.push(`  - feature：\`${group.feature}\``)
     if (group.pages && group.pages.length) lines.push(`  - 页面：${group.pages.map(file => `\`${file}\``).join('、')}`)
     if (group.apis && group.apis.length) lines.push(`  - API：${group.apis.map(file => `\`${file}\``).join('、')}`)
+    if (group.stores && group.stores.length) lines.push(`  - 状态：${group.stores.map(file => `\`${file}\``).join('、')}`)
+    if (group.components && group.components.length) lines.push(`  - 组件：${group.components.map(file => `\`${file}\``).join('、')}`)
     return lines.join('\n')
   }).join('\n')
 })()}
