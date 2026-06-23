@@ -58,7 +58,15 @@ npx agent-rule-cli --root /path/to/project
 
 ## 开发
 
-源码按职责拆在 `src/`，发布入口是根目录的 `agent-rules-init.cjs`。入口文件只负责加载 `src/cli.cjs` 并执行，核心规则判定逻辑可从独立模块直接单测。
+源码按职责拆成独立模块，发布入口是根目录的 `agent-rules-init.cjs`，只负责加载 `src/cli.cjs` 并执行：
+
+- `src/context.cjs`：配置、运行时状态与共享底层原语（读写、指纹、事实记录等）。
+- `src/scan.cjs`：仓库扫描（身份、技术栈、目录、Git、API、业务域与影响面）。
+- `src/wizard.cjs`：交互式问答与答案收集。
+- `src/render.cjs`：生成 `AGENTS.md` 与各 `project-*` / 语义工作流文档。
+- `src/verify.cjs`：`--verify` 的 schema、coverage、来源漂移与语义层校验。
+- `src/constants.cjs`、`src/verify-core.cjs`：静态目录、coverage catalog 与纯函数判定逻辑，可直接单测。
+- `src/cli.cjs`：仅编排 `main` 流程。
 
 修改源码后运行：
 
