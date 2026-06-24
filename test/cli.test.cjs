@@ -27,6 +27,13 @@ function assertIncludes(text, expected, label) {
   assert(text.indexOf(expected) >= 0, `${label || 'output'} should include "${expected}".\nActual output:\n${text}`)
 }
 
+function sectionBetween(text, start, end) {
+  const startIndex = text.indexOf(start)
+  if (startIndex < 0) return ''
+  const endIndex = end ? text.indexOf(end, startIndex + start.length) : -1
+  return text.slice(startIndex, endIndex >= 0 ? endIndex : undefined)
+}
+
 function mkdirp(dir) {
   fs.mkdirSync(dir, { recursive: true })
 }
@@ -144,6 +151,10 @@ test('generates and verifies a frontend fixture', () => {
     assert(fs.existsSync(path.join(root, 'AGENTS.md')), 'AGENTS.md should be generated')
     assert(fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'frontend project should include UI project rules')
     assert(fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'frontend project should include UI shared rules')
+    const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+    const factsSection = sectionBetween(apiRules, '## 已确认实现事实', '## 已知实现差距')
+    assert(factsSection.indexOf('统一请求入口：未定义') < 0, 'frontend without API should mark API entry as not-applicable instead of undefined')
+    assert(factsSection.indexOf('请求库：未定义') < 0, 'frontend without API should mark API library as not-applicable instead of undefined')
     assertVerifyOk(root)
   } finally {
     cleanup(root)
@@ -227,6 +238,17 @@ test('enrich continue imports candidate domains with evidence', () => {
         confidence: 'high',
         evidenceRefs: [{ path: 'src/utils/http.ts' }]
       }],
+      apiFacts: [{
+        id: 'api.currentErrorObject',
+        value: {
+          responseWrapper: 'src/utils/http.ts',
+          hasStructuredErrorType: true
+        },
+        status: 'confirmed',
+        confidence: 'high',
+        reason: '统一请求封装返回结构化错误',
+        evidenceRefs: [{ path: 'src/utils/http.ts' }]
+      }],
       directories: [{
         id: 'dir.api',
         value: 'src/app/api（Next.js route handler）+ src/server/actions（server actions）',
@@ -267,6 +289,7 @@ test('enrich continue imports candidate domains with evidence', () => {
     const result = runCli(['--enrich', '--continue', '--root', root])
     assert([0, 2].includes(result.status), `enrich continue should exit 0 or 2, got ${result.status}\n${result.outputText}`)
     assertIncludes(result.outputText, 'AI enrichment 已导入', 'continue output')
+    assertIncludes(result.outputText, 'API 事实 1 条', 'continue output should count imported API facts')
     const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
     assertIncludes(map, 'order：`src/app/(layout)/(basic)/order`', 'domain map should import candidate domain')
     assertIncludes(map, '`src/server/actions/order.ts`', 'domain map should include APIs from impact')
@@ -290,12 +313,124 @@ test('enrich continue imports candidate domains with evidence', () => {
     assert(controllersDir && controllersDir.status === 'not-applicable' && controllersDir.source === 'ai-enrichment', 'dir.controllers should record a not-applicable AI architecture explanation')
     const apiDir = manifest.facts.find(item => item.id === 'dir.api')
     assert(apiDir && /server actions/.test(apiDir.value), 'dir.api should accept descriptive values with multiple structural entrypoints')
+    const apiFact = manifest.facts.find(item => item.id === 'api.currentErrorObject')
+    assert(apiFact && apiFact.source === 'ai-enrichment' && apiFact.status === 'confirmed', 'apiFacts should be imported into project facts')
     const servicesDir = manifest.facts.find(item => item.id === 'dir.services')
     assert(servicesDir && servicesDir.status === 'needs-confirmation', 'dir.services should preserve needs-confirmation status')
     const semantics = readJson(path.join(root, '.agent-rules/project-semantics.json'))
     assert(semantics.entries.some(entry => entry.id === 'order.list' && entry.status === 'inferred'), 'AI semantic candidates should be imported as inferred')
     const verifyResult = verify(root)
     assert([0, 2].includes(verifyResult.status), `verify should not fail after ai import, got ${verifyResult.status}\n${verifyResult.outputText}`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('detects Spring backend API and exception handling facts', () => {
+  const root = makeTempProject('spring-api')
+  try {
+    write(path.join(root, 'pom.xml'), '<project><modelVersion>4.0.0</modelVersion></project>\n')
+    write(path.join(root, 'event-api/src/main/java/demo/api/EventClient.java'), [
+      'package demo.api;',
+      'import org.springframework.web.bind.annotation.RequestMapping;',
+      'public interface EventClient {',
+      '  @RequestMapping("/events")',
+      '  APIResponse<String> list();',
+      '}',
+      ''
+    ].join('\n'))
+    write(path.join(root, 'event-domain/src/main/java/demo/controller/EventController.java'), [
+      'package demo.controller;',
+      'import org.springframework.web.bind.annotation.RestController;',
+      '@RestController',
+      'public class EventController implements demo.api.EventClient {',
+      '  public demo.share.APIResponse<String> list() { return demo.share.APIResponse.success("ok"); }',
+      '}',
+      ''
+    ].join('\n'))
+    write(path.join(root, 'event-share/src/main/java/demo/share/APIResponse.java'), [
+      'package demo.share;',
+      'public class APIResponse<T> {',
+      '  private Boolean success;',
+      '  private String code="0";',
+      '  private String message;',
+      '  private T data;',
+      '  public static <T> APIResponse<T> success(T data) { return new APIResponse<T>(); }',
+      '  public static <T> APIResponse<T> fail(String code, String message, T data) { return new APIResponse<T>(); }',
+      '}',
+      ''
+    ].join('\n'))
+    write(path.join(root, 'event-share/src/main/java/demo/share/BusinessException.java'), [
+      'package demo.share;',
+      'public class BusinessException extends RuntimeException {',
+      '  private String errorCode;',
+      '}',
+      ''
+    ].join('\n'))
+    write(path.join(root, 'event-share/src/main/java/demo/share/GlobalExceptionHandler.java'), [
+      'package demo.share;',
+      'import org.springframework.http.HttpStatus;',
+      'import org.springframework.web.bind.annotation.ControllerAdvice;',
+      'import org.springframework.web.bind.annotation.ExceptionHandler;',
+      'import org.springframework.web.bind.annotation.ResponseStatus;',
+      '@ControllerAdvice',
+      'public class GlobalExceptionHandler {',
+      '  private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);',
+      '  @ExceptionHandler(BusinessException.class)',
+      '  @ResponseStatus(HttpStatus.OK)',
+      '  public APIResponse<String> handle(BusinessException e) {',
+      '    log.error("business", e);',
+      '    return APIResponse.fail("BIZ_ERROR", "业务异常", null);',
+      '  }',
+      '}',
+      ''
+    ].join('\n'))
+    write(path.join(root, 'event-domain/src/main/java/demo/security/ShiroFilter.java'), [
+      'package demo.security;',
+      'public class ShiroFilter extends org.apache.shiro.web.filter.authc.AuthenticatingFilter {',
+      '  protected boolean onAccessDenied(javax.servlet.ServletRequest request, javax.servlet.ServletResponse response) throws Exception {',
+      '    ((javax.servlet.http.HttpServletResponse) response).setHeader("Access-Control-Allow-Credentials", "true");',
+      '    ((javax.servlet.http.HttpServletResponse) response).setStatus(463);',
+      '    return false;',
+      '  }',
+      '}',
+      ''
+    ].join('\n'))
+
+    generate(root)
+    const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+    assertIncludes(apiRules, '请求库：Spring MVC / Spring Boot', 'Spring backend should record request/API framework')
+    assertIncludes(apiRules, '成功业务码：`{"value":"0","type":"string"}`', 'Spring backend should record response success code')
+    assertIncludes(apiRules, '当前显式处理的 HTTP 状态：`200`、`463`', 'Spring backend should record handled statuses')
+    assertIncludes(apiRules, 'GlobalExceptionHandler.java', 'Spring backend should render global exception handler evidence')
+    assert(apiRules.indexOf('统一请求入口：未定义') < 0, 'Spring backend should not leave api.entry undefined')
+    const securityRules = fs.readFileSync(path.join(root, '.agent-rules/project-security-performance.md'), 'utf8')
+    assertIncludes(securityRules, '认证 / 路由守卫：event-domain/src/main/java/demo/security/ShiroFilter.java', 'Spring backend should record auth guard entry')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('detects Express backend API facts without directory gap', () => {
+  const root = makeTempProject('express-api')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'express-api', dependencies: { express: '^4.18.0' } }, null, 2))
+    write(path.join(root, 'src/server.js'), [
+      'const express = require("express")',
+      'const app = express()',
+      'app.get("/health", (req, res) => res.json({ ok: true }))',
+      'app.use((err, req, res, next) => res.status(500).json({ message: err.message }))',
+      ''
+    ].join('\n'))
+    const result = generate(root)
+    assert(result.outputText.indexOf('目录识别缺口') < 0, 'Express server entry should satisfy backend entry detection')
+    const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+    const factsSection = sectionBetween(apiRules, '## 已确认实现事实', '## 已知实现差距')
+    assertIncludes(factsSection, '请求库：Express', 'Express backend should record API framework')
+    assertIncludes(factsSection, '当前显式处理的 HTTP 状态：`500`', 'Express backend should record handled statuses')
+    assert(factsSection.indexOf('统一请求入口：未定义') < 0, 'Express backend should not leave API entry undefined')
+    assertVerifyOk(root)
   } finally {
     cleanup(root)
   }
@@ -679,6 +814,13 @@ test('generates backend fixture without UI rules and with backend project rules'
     assert(fs.existsSync(path.join(root, '.agent-rules/project-backend-api-contracts.md')), 'backend project rules should be generated')
     assert(!fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'backend project should not include UI project rules')
     assert(!fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'backend project should not include UI shared rules')
+    const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+    const factsSection = sectionBetween(apiRules, '## 已确认实现事实', '## 已知实现差距')
+    assert(factsSection.indexOf('统一请求入口：未定义') < 0, 'backend should derive an API entry from handlers/backend dirs')
+    assert(factsSection.indexOf('请求库：未定义') < 0, 'backend should derive a backend API library')
+    assert(factsSection.indexOf('withCredentials：未定义') < 0, 'backend should mark browser withCredentials as not-applicable')
+    const stateRules = fs.readFileSync(path.join(root, '.agent-rules/project-state-data-flow.md'), 'utf8')
+    assert(stateRules.indexOf('状态管理：未定义') < 0, 'backend should mark frontend state library as not-applicable')
     assertVerifyOk(root)
   } finally {
     cleanup(root)

@@ -16,6 +16,7 @@ const { calculateManifestModule } = require('./verify-core.cjs')
 const CONFIDENCE = new Set(['high', 'medium', 'low'])
 const IMPORTABLE_CONFIDENCE = new Set(['high', 'medium'])
 const STRUCTURAL_STATUSES = new Set(['inferred', 'not-applicable', 'needs-confirmation'])
+const FACT_STATUSES = new Set(['confirmed', 'inferred', 'not-applicable', 'needs-confirmation'])
 
 function readJsonFile(relative) {
   return JSON.parse(fs.readFileSync(path.join(ROOT, relative), 'utf8'))
@@ -60,6 +61,7 @@ function validateCandidate(candidate) {
     domains: candidate && candidate.domains,
     impact: candidate && candidate.impact,
     sharedAssets: candidate && candidate.sharedAssets,
+    apiFacts: candidate && candidate.apiFacts,
     semantics: candidate && candidate.semantics
   })) {
     if (value !== undefined && !Array.isArray(value)) errors.push(`${key} 必须是数组`)
@@ -90,6 +92,14 @@ function validateCandidate(candidate) {
     if (asset.confidence && !CONFIDENCE.has(asset.confidence)) errors.push(`${label} confidence 非法：${asset.confidence}`)
     validateEvidence(asset, label, errors)
   }
+  for (const fact of ensureArray(candidate && candidate.apiFacts)) {
+    const label = `apiFact:${fact && fact.id || '<unknown>'}`
+    if (!fact || typeof fact.id !== 'string' || fact.value === undefined) errors.push(`${label} 必须包含 id/value`)
+    if (fact.confidence && !CONFIDENCE.has(fact.confidence)) errors.push(`${label} confidence 非法：${fact.confidence}`)
+    if (fact.status && !FACT_STATUSES.has(fact.status)) errors.push(`${label} status 非法：${fact.status}`)
+    if (!/^api\.|^auth\./.test(fact && fact.id || '')) errors.push(`${label} 仅支持 api.* 或 auth.*`)
+    validateEvidence(fact, label, errors)
+  }
   for (const entry of ensureArray(candidate && candidate.semantics)) {
     const label = `semantic:${entry && entry.id || '<unknown>'}`
     if (!entry || typeof entry.id !== 'string' || typeof entry.domain !== 'string' || typeof entry.statement !== 'string') errors.push(`${label} 必须包含 id/domain/statement`)
@@ -109,6 +119,7 @@ function renderEnrichmentFiles() {
       architectureCoverage: '请逐项处理 project-architecture.md 会展示的结构字段：dir.api、dir.state、dir.pages、dir.router、dir.components、dir.backendEntry、dir.controllers、dir.services、dir.repositories、dir.models、dir.migrations、dir.jobs、dir.config。能确认就 inferred，架构不采用就 not-applicable，确实无法从代码判断且会影响实现才 needs-confirmation。',
       impact: '业务域影响面候选，包含 pages/apis/stores/components/feature 等路径数组。',
       sharedAssets: '被两个及以上业务域使用的组件、状态、API 或工具候选。',
+      apiFacts: '接口、错误处理、认证失败和统一响应事实候选，如 api.entry、api.library、api.successBusinessCode、api.handledHttpStatuses、api.currentErrorObject、api.currentErrorPresentation、api.currentLogging、api.implementationGaps、auth.current403Behavior、auth.guardEntry。只写代码能证明的实现事实。',
       semantics: '代码无法自证的业务语义候选；高风险语义保持 inferred，不得标 user-confirmed。'
     },
     confidence: ['high', 'medium', 'low'],
@@ -177,6 +188,20 @@ function renderEnrichmentFiles() {
   ],
   "impact": [],
   "sharedAssets": [],
+  "apiFacts": [
+    {
+      "id": "api.currentErrorObject",
+      "value": {
+        "responseWrapper": "src/shared/APIResponse.java",
+        "globalExceptionHandler": "src/shared/GlobalExceptionHandler.java",
+        "hasStructuredErrorType": true
+      },
+      "status": "confirmed",
+      "confidence": "high",
+      "reason": "统一响应体与全局异常处理可由源码直接确认",
+      "evidenceRefs": [{ "path": "src/shared/APIResponse.java" }, { "path": "src/shared/GlobalExceptionHandler.java" }]
+    }
+  ],
   "semantics": []
 }
 \`\`\`
@@ -266,6 +291,27 @@ function importDirectories(manifest, directories) {
   }
 }
 
+function importApiFacts(manifest, apiFacts) {
+  const candidateHash = hashFile(path.join(ROOT, ENRICH_CANDIDATE_FILE))
+  let imported = 0
+  for (const entry of ensureArray(apiFacts).filter(item => IMPORTABLE_CONFIDENCE.has(item.confidence || 'medium'))) {
+    const status = entry.status || 'inferred'
+    upsertFact(manifest, {
+      id: entry.id,
+      module: entry.id === 'auth.guardEntry' ? 'security' : 'api',
+      value: entry.value,
+      status,
+      source: 'ai-enrichment',
+      evidence: ENRICH_CANDIDATE_FILE,
+      evidenceRefs: [{ path: ENRICH_CANDIDATE_FILE, kind: 'file', sha256: candidateHash }],
+      verifiedAt: VERIFIED_AT,
+      note: entry.reason || ''
+    })
+    imported += 1
+  }
+  return imported
+}
+
 function updateModuleStates(manifest) {
   manifest.modules = Object.fromEntries(Object.keys(MODULES).map(module => [
     module,
@@ -345,6 +391,7 @@ function importAiEnrichment() {
   }
   upsertFact(manifest, fact)
   importDirectories(manifest, directories)
+  const importedApiFacts = importApiFacts(manifest, candidate.apiFacts)
   updateModuleStates(manifest)
   const semanticResult = mergeSemantics(candidate)
   hydrateRuntimeFromManifest(manifest)
@@ -356,7 +403,7 @@ function importAiEnrichment() {
   const refreshed = readJsonFile('.agent-rules/project-facts.json')
   refreshed.artifacts = artifactHashes(refreshed)
   writeJsonFile('.agent-rules/project-facts.json', refreshed)
-  process.stdout.write(`AI enrichment 已导入：关键目录 ${directories.length} 个，业务域 ${value.domains.length} 个，影响面 ${value.impact.length} 个，共享资产 ${value.sharedAssets.length} 个，语义新增 ${semanticResult.added} 条，跳过重复语义 ${semanticResult.skipped} 条。\n`)
+  process.stdout.write(`AI enrichment 已导入：关键目录 ${directories.length} 个，业务域 ${value.domains.length} 个，影响面 ${value.impact.length} 个，共享资产 ${value.sharedAssets.length} 个，API 事实 ${importedApiFacts} 条，语义新增 ${semanticResult.added} 条，跳过重复语义 ${semanticResult.skipped} 条。\n`)
 }
 
 function printEnrichmentHandoff() {
