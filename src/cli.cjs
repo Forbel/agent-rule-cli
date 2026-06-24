@@ -1,7 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const {
-  PACKAGE, COMMAND, ROOT, RULE_DIR, VERIFY_ONLY, NON_INTERACTIVE, SHOW_HELP, MODULES,
+  PACKAGE, COMMAND, ROOT, RULE_DIR, VERIFY_ONLY, NON_INTERACTIVE, SHOW_HELP, ENRICH, ENRICH_CONTINUE, MODULES,
   facts, ui, note, warn, markdownValue
 } = require('./context.cjs')
 const { scanAll } = require('./scan.cjs')
@@ -12,13 +12,18 @@ const {
   renderSemanticWorkflow, renderSemanticSkill, renderFacts
 } = require('./render.cjs')
 const { verify } = require('./verify.cjs')
+const { renderEnrichmentFiles, importAiEnrichment, printEnrichmentHandoff } = require('./enrich.cjs')
 
 async function main() {
   if (SHOW_HELP) {
-    process.stdout.write(`${PACKAGE.name} v${PACKAGE.version}\n\n用法：\n  ${COMMAND} [--root <项目目录>]\n  ${COMMAND} --verify [--strict] [--root <项目目录>]\n\n选项：\n  --root       指定目标项目，默认当前目录\n  --verify     检查 schema、coverage、模板、事实来源、产物和过期时间\n  --strict     verify 出现 partial、undefined、过期或其他警告时返回退出码 2\n  --defaults   使用推荐默认值生成，所有未人工确认策略标记为 inferred\n  --help       显示帮助\n`)
+    process.stdout.write(`${PACKAGE.name} v${PACKAGE.version}\n\n用法：\n  ${COMMAND} [--root <项目目录>]\n  ${COMMAND} --verify [--strict] [--root <项目目录>]\n  ${COMMAND} --enrich [--root <项目目录>]\n  ${COMMAND} --enrich --continue [--root <项目目录>]\n\n选项：\n  --root       指定目标项目，默认当前目录\n  --verify     检查 schema、coverage、模板、事实来源、产物和过期时间\n  --strict     verify 出现 partial、undefined、过期或其他警告时返回退出码 2\n  --defaults   使用推荐默认值生成，所有未人工确认策略标记为 inferred\n  --enrich     生成保守基础规则和 AI enrichment 任务；--continue 导入候选并严格校验\n  --help       显示帮助\n`)
     return
   }
   if (!fs.existsSync(ROOT)) throw new Error(`项目目录不存在：${ROOT}`)
+  if (ENRICH_CONTINUE) {
+    importAiEnrichment()
+    return verify()
+  }
   if (VERIFY_ONLY) return verify()
 
   note('AI 项目规则脚手架')
@@ -66,11 +71,13 @@ async function main() {
   renderProjectRules()
   renderSemanticWorkflow()
   renderSemanticSkill()
+  if (ENRICH) renderEnrichmentFiles()
   renderFacts()
 
   note('完成')
   process.stdout.write(`已生成规则。摘要：${path.join(RULE_DIR, 'project-summary.md')}\n`)
   verify()
+  if (ENRICH) printEnrichmentHandoff()
 }
 
 module.exports = { main }

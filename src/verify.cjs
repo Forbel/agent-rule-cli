@@ -88,7 +88,7 @@ function verify() {
   const manifest = JSON.parse(fs.readFileSync(factsFile, 'utf8'))
   const errors = []
   const warnings = []
-  const validStatuses = new Set(['confirmed', 'user-confirmed', 'inferred', 'undefined', 'not-applicable'])
+  const validStatuses = new Set(['confirmed', 'user-confirmed', 'inferred', 'undefined', 'not-applicable', 'needs-confirmation'])
 
   if (manifest.schemaVersion !== 2) errors.push(`不支持的 facts schemaVersion：${manifest.schemaVersion}`)
   if (!manifest.generatorVersion || !manifest.generatedAt || !Array.isArray(manifest.facts) || !manifest.modules || !manifest.artifacts) errors.push('project-facts.json 缺少必需字段。')
@@ -130,7 +130,7 @@ function verify() {
     return item && item.value !== undefined ? item.value : fallback
   }
   const domainFact = manifestFact('domain.map')
-  if (domainFact) {
+  if (domainFact && domainFact.source !== 'ai-enrichment') {
     const currentDomainMap = collectDomainMap(manifestValue('dir.pages', ''), manifestValue('dir.api', ''), manifestValue('dir.features', ''), manifestValue('dir.state', ''), manifestValue('dir.components', ''))
     const comparable = { domains: currentDomainMap.domains, routePaths: currentDomainMap.routePaths, apiFiles: currentDomainMap.apiFiles, impact: currentDomainMap.impact, sharedAssets: currentDomainMap.sharedAssets }
     if (JSON.stringify(comparable) !== JSON.stringify(domainFact.value)) errors.push('业务域结构已变化，需要重新生成：domain.map')

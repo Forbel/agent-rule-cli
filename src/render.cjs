@@ -62,11 +62,58 @@ function metadata(module) {
 function sourceFact(id, label) {
   const item = fact(id)
   if (!item) return `- ${label}：未定义。`
+  const inferredLabel = item.source === 'ai-enrichment' ? '（AI 推断）' : '（推断，待确认）'
   const statusNote = {
-    inferred: '（推断，待确认）',
-    undefined: '（待补充）'
+    inferred: inferredLabel,
+    undefined: '（待补充）',
+    'needs-confirmation': '（待人工确认）',
+    'not-applicable': '（不适用）'
   }[item.status] || ''
-  return `- ${label}：${markdownValue(item.value)}。${statusNote}`
+  const note = item.note && ['inferred', 'needs-confirmation', 'not-applicable'].includes(item.status) ? ` ${item.note}` : ''
+  return `- ${label}：${markdownValue(item.value)}。${statusNote}${note}`
+}
+
+const ARCHITECTURE_CORE_FACT_IDS = new Set([
+  'project.name',
+  'project.description',
+  'project.scope',
+  'stack.technologies',
+  'dir.utils',
+  'dir.api',
+  'dir.state',
+  'dir.pages',
+  'dir.router',
+  'dir.components',
+  'dir.backendEntry',
+  'dir.controllers',
+  'dir.services',
+  'dir.repositories',
+  'dir.models',
+  'dir.migrations',
+  'dir.jobs',
+  'dir.config',
+  'project.outputLanguage',
+  'policy.directoryBoundaries',
+  'policy.newDirectories',
+  'policy.featureBoundary'
+])
+
+const ARCHITECTURE_EXTRA_LABELS = {
+  'dir.serverActions': 'Server Actions 目录',
+  'dir.serverTypes': '服务端类型目录',
+  'dir.apiClients': '服务端 API client / 请求封装',
+  'dir.middleware': '中间件目录',
+  'dir.schemas': 'Schema / DTO 目录'
+}
+
+function architectureExtraFacts() {
+  return facts
+    .filter(item => item.module === 'architecture' && item.id.startsWith('dir.') && !ARCHITECTURE_CORE_FACT_IDS.has(item.id))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+function architectureExtraLabel(id) {
+  return ARCHITECTURE_EXTRA_LABELS[id] || id.replace(/^dir\./, '').replace(/([A-Z])/g, ' $1').trim()
 }
 
 function write(relative, content) {
@@ -116,6 +163,44 @@ function renderStatusLines(modules) {
     const dimensions = state.dimensions ? `；${dimensionLabel('strategy', state.dimensions.strategy)}；${dimensionLabel('repositoryFacts', state.dimensions.repositoryFacts)}；${dimensionLabel('businessContracts', state.dimensions.businessContracts)}` : ''
     return `- ${MODULES[module]}：${coverageLabel(state.status)}${dimensions}${detail}`
   }).join('\n')
+}
+
+function renderRuleCatalog(scope) {
+  const rows = [
+    ['`project-summary.md`', '快速了解项目类型、技术栈和模块覆盖状态；正式决策仍以具体规则和 `project-facts.json` 为准。'],
+    ['`project-custom.md`', '人工维护的项目例外、已确认特殊规则；任务开始默认读取。'],
+    ['`project-architecture.md`', '架构、目录、入口、路由、模块边界和新增目录决策。'],
+    ['`project-code-quality.md`', '代码质量、复用、抽象、模型/转换位置和重构边界。'],
+    ['`project-code-inventory.md`', '查找已有入口、组件、后端代表文件和代码资产。'],
+    ['`project-reuse-candidates.md`', '新增同类能力前检查跨域共享资产，避免重复造轮子。']
+  ]
+  if (scope !== 'backend') rows.push(['`project-ui-rules.md`', 'UI、组件、样式、交互、表单、视觉验收和可访问性。'])
+  rows.push(
+    ['`project-api-error-handling.md`', '接口调用、错误处理、登录失效、权限不足、重试和请求生命周期。'],
+    ['`project-state-data-flow.md`', '状态管理、持久化、跨页面传递、服务端权威数据和异步一致性。'],
+    ['`project-security-performance.md`', '敏感信息、权限边界、资源路径、上传、缓存、并发和性能。']
+  )
+  if (scope !== 'frontend') {
+    rows.push(
+      ['`project-backend-api-contracts.md`', '后端接口契约、入参校验、响应结构、服务层错误和版本兼容。'],
+      ['`project-backend-data-persistence.md`', '数据库、事务、迁移、回填、缓存一致性和数据修复。'],
+      ['`project-backend-auth-security.md`', '后端鉴权、租户/组织隔离、审计、敏感数据和服务间调用。'],
+      ['`project-backend-jobs-messaging.md`', '定时任务、队列、重试、死信、补偿和幂等。'],
+      ['`project-backend-observability.md`', '后端日志、指标、链路追踪、告警和值班诊断。']
+    )
+  }
+  rows.push(
+    ['`project-testing-quality-gates.md`', '测试策略、风险分级、核心链路、手动回归和剩余风险。'],
+    ['`project-git-delivery.md`', '分支、提交、PR、CI、发布、tag、推送和高风险 Git 操作。'],
+    ['`project-business-rules.md`', '业务规则来源、高风险业务域、状态/枚举/权限码来源。'],
+    ['`project-domain-map.md`', '业务域、页面/API/状态/组件影响面和定位导航。'],
+    ['`project-semantics.json`', '代码无法自证的业务语义；状态、枚举、金额、权限和流转先查这里。'],
+    ['`semantic-workflow.md`', '新增、确认、回写和复核业务语义的工作流。'],
+    ['`project-facts.json`', '生成事实、来源、hash 和覆盖状态；规则维护或 verify 问题排查时读取。']
+  )
+  const sharedRows = selectedSharedTemplates(scope)
+    .map(file => [`\`${file}\``, '对应任务的跨项目通用底线；当任务路由提到“对应 shared 文件”或规则维护时读取。'])
+  return [...rows, ...sharedRows].map(([file, usage]) => `- ${file}：${usage}`).join('\n')
 }
 
 function renderAgents() {
@@ -201,15 +286,19 @@ function renderIndex() {
 
 任务开始读取本文件和 \`project-custom.md\`，再按任务类型加载必要规则。不得为了保险全量读取。
 
-## 3. 任务路由
+## 3. 规则文件用途清单
+
+${renderRuleCatalog(scope)}
+
+## 4. 任务路由
 
 ${routeLines.join('\n')}
 
-## 4. 决策顺序
+## 5. 决策顺序
 
 先读规则与事实清单，再检查指定入口和局部代码，存在明确模式则沿用；仅在新增业务语义、证据冲突、高风险或不可逆选择时询问用户。
 
-## 5. 必须确认的高风险缺口
+## 6. 必须确认的高风险缺口
 
 - 涉及业务语义、业务规则、状态流转、金额、权限、审核、支付、订单、删除、禁用、导出等高风险行为时，若 \`project-*\`、\`project-custom.md\`、权威业务文档或接口契约没有明确说明，必须先向用户确认；不得根据字段名、页面文案、代码现状或模型常识自行推断。
 - 涉及数据契约、字段含义、默认值、枚举映射、类型转换、单位、时区、金额精度和空值语义时，缺少明确契约必须确认，不得自行补语义。
@@ -217,17 +306,17 @@ ${routeLines.join('\n')}
 - 涉及数据库 schema、迁移、回填、删除字段/索引、事务边界、缓存失效、队列重放和外部副作用时，缺少回滚、补偿或幂等说明必须确认。
 - 涉及发布、推送、打 tag、删除分支、重写历史、强制推送、清空工作区和生产环境操作时，必须获得用户明确授权。
 
-## 6. 模块状态
+## 7. 模块状态
 
 ${renderStatusLines(Object.keys(MODULES))}
 
-## 7. 事实有效性
+## 8. 事实有效性
 
 - 事实清单：\`project-facts.json\`。
 - 最后核验：${VERIFIED_AT}。
 - 使用 \`${COMMAND} --verify\` 检查模板漂移、来源缺失和事实过期。
 
-## 8. 默认输出语言
+## 9. 默认输出语言
 
 AI 回复、规则文档、交付说明和代码注释默认使用${markdownValue(factValue('project.outputLanguage', '未定义，新增场景需人工确认'))}。`)
 }
@@ -364,6 +453,12 @@ ${sourceFact('dir.models', '领域 / 数据模型目录')}
 ${sourceFact('dir.migrations', '数据库迁移目录')}
 ${sourceFact('dir.jobs', '任务 / worker 目录')}
 ${sourceFact('dir.config', '配置目录')}`
+  const extraArchitectureFacts = architectureExtraFacts()
+  const extraArchitectureSection = extraArchitectureFacts.length ? `
+
+## AI 识别的补充架构入口
+
+${extraArchitectureFacts.map(item => sourceFact(item.id, architectureExtraLabel(item.id))).join('\n')}` : ''
 
   write('.agent-rules/project-architecture.md', `# 项目架构规则
 
@@ -379,6 +474,7 @@ ${sourceFact('dir.utils', '工具目录')}
 ${sourceFact('dir.api', 'API / service 目录')}
 ${sourceFact('dir.state', '状态目录')}
 ${frontendArchitectureFacts}${backendArchitectureFacts}
+${extraArchitectureSection}
 
 ## 项目策略
 

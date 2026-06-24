@@ -97,6 +97,7 @@ test('prints help', () => {
   assert(result.status === 0, `help should exit 0, got ${result.status}\n${result.outputText}`)
   assertIncludes(result.outputText, '用法：', 'help output')
   assertIncludes(result.outputText, 'npx agent-rule-cli', 'help output')
+  assertIncludes(result.outputText, '--enrich', 'help output')
 })
 
 test('makeReadline resets closed state for repeated confirmations', () => {
@@ -144,6 +145,157 @@ test('generates and verifies a frontend fixture', () => {
     assert(fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'frontend project should include UI project rules')
     assert(fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'frontend project should include UI shared rules')
     assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('rules index references every generated project and shared rule', () => {
+  const root = makeTempProject('rule-routing')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    mkdirp(path.join(root, 'src/components'))
+    generate(root)
+    const entryText = [
+      fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8'),
+      fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8')
+    ].join('\n')
+    const files = fs.readdirSync(path.join(root, '.agent-rules'))
+      .filter(file => /^project-.*\.(md|json)$/.test(file) || /^shared-.*\.md$/.test(file) || file === 'semantic-workflow.md')
+      .filter(file => file !== 'project-facts.json')
+      .sort()
+    for (const file of files) {
+      assertIncludes(entryText, file, `${file} should be reachable from AGENTS.md or project-index.md`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('enrich generates an AI handoff task and adapter', () => {
+  const root = makeTempProject('enrich-task')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'enrich-task', dependencies: { react: '^18.0.0' } }, null, 2))
+    mkdirp(path.join(root, 'pages'))
+    const result = runCli(['--enrich', '--root', root])
+    assert(result.status === 0, `enrich should exit 0, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '::agent-rule-cli-enrich', 'enrich output should include machine-readable handoff')
+    assert(fs.existsSync(path.join(root, '.agent-rules/ai-enrichment-task.md')), 'enrich task should be generated')
+    assert(fs.existsSync(path.join(root, '.agent-rules/ai-enrichment-schema.json')), 'enrich schema should be generated')
+    assert(fs.existsSync(path.join(root, '.claude/skills/enrich-agent-rules/SKILL.md')), 'enrich skill adapter should be generated')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('enrich continue imports candidate domains with evidence', () => {
+  const root = makeTempProject('enrich-import')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'enrich-import', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/app/(layout)/(basic)/order/list/page.tsx'), 'export default function OrderList() {}\n')
+    write(path.join(root, 'src/app/api/orders/route.ts'), 'export async function GET() {}\n')
+    write(path.join(root, 'src/server/actions/order.ts'), 'export async function queryOrder() {}\n')
+    write(path.join(root, 'src/utils/http.ts'), 'export const http = {}\n')
+    const generateResult = runCli(['--enrich', '--root', root])
+    assert(generateResult.status === 0, `enrich should exit 0, got ${generateResult.status}\n${generateResult.outputText}`)
+    writeJson(path.join(root, '.agent-rules/ai-enrichment.candidate.json'), {
+      schemaVersion: 1,
+      generatedAt: '2026-06-24T00:00:00.000Z',
+      domains: [{
+        name: 'order',
+        kind: 'page',
+        root: 'src/app/(layout)/(basic)/order',
+        confidence: 'high',
+        reason: '订单页面目录与 server action 均指向 order 业务域',
+        evidenceRefs: [{ path: 'src/app/(layout)/(basic)/order/list/page.tsx' }, { path: 'src/server/actions/order.ts' }]
+      }],
+      impact: [{
+        name: 'order',
+        pages: ['src/app/(layout)/(basic)/order/list/page.tsx'],
+        apis: ['src/app/api/orders/route.ts', 'src/server/actions/order.ts'],
+        stores: [],
+        components: [],
+        confidence: 'high',
+        reason: '页面入口明确属于 order 域',
+        evidenceRefs: [{ path: 'src/app/(layout)/(basic)/order/list/page.tsx' }]
+      }],
+      sharedAssets: [{
+        path: 'src/utils/http.ts',
+        kind: 'api',
+        usedBy: ['order', 'auth'],
+        confidence: 'high',
+        evidenceRefs: [{ path: 'src/utils/http.ts' }]
+      }],
+      directories: [{
+        id: 'dir.api',
+        value: 'src/app/api（Next.js route handler）+ src/server/actions（server actions）',
+        status: 'inferred',
+        confidence: 'high',
+        reason: '接口入口由 Next.js route handler 和 server actions 共同承担',
+        evidenceRefs: [{ path: 'src/app/api/orders/route.ts' }, { path: 'src/server/actions/order.ts' }]
+      }, {
+        id: 'dir.controllers',
+        value: '不采用传统 controllers 目录；路由处理由 src/app/api/**/route.* 承担',
+        status: 'not-applicable',
+        confidence: 'high',
+        reason: '项目使用 Next.js App Router route handler，而非传统 Controller 分层',
+        evidenceRefs: [{ path: 'src/app/api/orders/route.ts' }]
+      }, {
+        id: 'dir.services',
+        value: '未发现独立 service 层；当前服务端业务调用集中在 src/server/actions',
+        status: 'needs-confirmation',
+        confidence: 'medium',
+        reason: '新增复杂服务逻辑前需确认是继续沿用 server actions，还是引入独立 service 层',
+        evidenceRefs: [{ path: 'src/server/actions/order.ts' }]
+      }, {
+        id: 'dir.serverActions',
+        value: 'src/server/actions',
+        status: 'inferred',
+        confidence: 'high',
+        reason: '服务端业务调用集中在 src/server/actions',
+        evidenceRefs: [{ path: 'src/server/actions/order.ts' }]
+      }],
+      semantics: [{
+        id: 'order.list',
+        domain: 'order',
+        statement: '订单列表页面展示订单查询结果；具体状态语义需业务确认。',
+        risk: ['订单', '状态'],
+        evidenceRefs: [{ path: 'src/app/(layout)/(basic)/order/list/page.tsx' }]
+      }]
+    })
+    const result = runCli(['--enrich', '--continue', '--root', root])
+    assert([0, 2].includes(result.status), `enrich continue should exit 0 or 2, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, 'AI enrichment 已导入', 'continue output')
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    assertIncludes(map, 'order：`src/app/(layout)/(basic)/order`', 'domain map should import candidate domain')
+    assertIncludes(map, '`src/server/actions/order.ts`', 'domain map should include APIs from impact')
+    const reuse = fs.readFileSync(path.join(root, '.agent-rules/project-reuse-candidates.md'), 'utf8')
+    assertIncludes(reuse, '`src/utils/http.ts`', 'reuse candidates should import shared assets')
+    const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+    assertIncludes(architecture, '页面目录：src/app', 'architecture should be rerendered with imported pages directory')
+    assertIncludes(architecture, 'API / service 目录：src/app/api（Next.js route handler）+ src/server/actions（server actions）', 'architecture should import descriptive API architecture values')
+    assertIncludes(architecture, 'Controller / 路由处理目录：不采用传统 controllers 目录', 'architecture should explain template mismatch instead of leaving controllers undefined')
+    assertIncludes(architecture, '（不适用）', 'not-applicable directory should be labeled')
+    assertIncludes(architecture, 'Service / use case 目录：未发现独立 service 层', 'architecture should import needs-confirmation explanations')
+    assertIncludes(architecture, '（待人工确认）', 'needs-confirmation directory should be labeled')
+    assertIncludes(architecture, 'AI 识别的补充架构入口', 'architecture should render extra AI-discovered architecture dirs')
+    assertIncludes(architecture, 'Server Actions 目录：src/server/actions', 'extra architecture dirs should be rendered')
+    const manifest = readJson(path.join(root, '.agent-rules/project-facts.json'))
+    const domain = manifest.facts.find(item => item.id === 'domain.map')
+    assert(domain && domain.source === 'ai-enrichment', 'domain.map should record ai-enrichment as source')
+    const pagesDir = manifest.facts.find(item => item.id === 'dir.pages')
+    assert(pagesDir && pagesDir.value === 'src/app' && pagesDir.source === 'ai-enrichment', 'dir.pages should be inferred from imported App Router domains')
+    const controllersDir = manifest.facts.find(item => item.id === 'dir.controllers')
+    assert(controllersDir && controllersDir.status === 'not-applicable' && controllersDir.source === 'ai-enrichment', 'dir.controllers should record a not-applicable AI architecture explanation')
+    const apiDir = manifest.facts.find(item => item.id === 'dir.api')
+    assert(apiDir && /server actions/.test(apiDir.value), 'dir.api should accept descriptive values with multiple structural entrypoints')
+    const servicesDir = manifest.facts.find(item => item.id === 'dir.services')
+    assert(servicesDir && servicesDir.status === 'needs-confirmation', 'dir.services should preserve needs-confirmation status')
+    const semantics = readJson(path.join(root, '.agent-rules/project-semantics.json'))
+    assert(semantics.entries.some(entry => entry.id === 'order.list' && entry.status === 'inferred'), 'AI semantic candidates should be imported as inferred')
+    const verifyResult = verify(root)
+    assert([0, 2].includes(verifyResult.status), `verify should not fail after ai import, got ${verifyResult.status}\n${verifyResult.outputText}`)
   } finally {
     cleanup(root)
   }

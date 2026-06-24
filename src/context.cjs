@@ -17,8 +17,10 @@ if (rootArgIndex >= 0 && (!args[rootArgIndex + 1] || args[rootArgIndex + 1].star
 const ROOT = path.resolve(rootArgIndex >= 0 ? args[rootArgIndex + 1] : process.cwd())
 const RULE_DIR = path.join(ROOT, '.agent-rules')
 const VERIFY_ONLY = args.includes('--verify')
-const STRICT = args.includes('--strict')
-const NON_INTERACTIVE = args.includes('--defaults')
+const ENRICH = args.includes('--enrich')
+const ENRICH_CONTINUE = ENRICH && args.includes('--continue')
+const STRICT = args.includes('--strict') || ENRICH_CONTINUE
+const NON_INTERACTIVE = args.includes('--defaults') || ENRICH
 const SHOW_HELP = args.includes('--help') || args.includes('-h')
 const NOW = new Date()
 const VERIFIED_AT = NOW.toISOString().slice(0, 10)
@@ -69,7 +71,10 @@ const GENERATED_ARTIFACTS = [
   '.agent-rules/project-business-rules.md',
   '.agent-rules/project-domain-map.md',
   '.agent-rules/semantic-workflow.md',
-  '.claude/skills/sync-semantics/SKILL.md'
+  '.agent-rules/ai-enrichment-task.md',
+  '.agent-rules/ai-enrichment-schema.json',
+  '.claude/skills/sync-semantics/SKILL.md',
+  '.claude/skills/enrich-agent-rules/SKILL.md'
 ]
 
 // Curated, persistent semantic store. Like project-custom.md it is never
@@ -78,6 +83,10 @@ const GENERATED_ARTIFACTS = [
 // provenance and source drift, not for content stability.
 const SEMANTICS_FILE = '.agent-rules/project-semantics.json'
 const SEMANTIC_SKILL_FILE = '.claude/skills/sync-semantics/SKILL.md'
+const ENRICH_TASK_FILE = '.agent-rules/ai-enrichment-task.md'
+const ENRICH_SCHEMA_FILE = '.agent-rules/ai-enrichment-schema.json'
+const ENRICH_CANDIDATE_FILE = '.agent-rules/ai-enrichment.candidate.json'
+const ENRICH_SKILL_FILE = '.claude/skills/enrich-agent-rules/SKILL.md'
 const SEMANTIC_STATUSES = new Set(['inferred', 'user-confirmed'])
 const HIGH_RISK_SEMANTICS = ['金额', '权限', '状态', '审核', '支付', '订单', '退款', '删除', '禁用', '库存', '结算', '余额', '优惠']
 
@@ -213,8 +222,10 @@ function hashFile(file) {
 
 module.exports = {
   PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, VERIFY_ONLY, STRICT,
-  NON_INTERACTIVE, SHOW_HELP, NOW, VERIFIED_AT, TIMESTAMP, EXISTING_MANIFEST,
-  GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, SEMANTIC_STATUSES, HIGH_RISK_SEMANTICS,
+  NON_INTERACTIVE, SHOW_HELP, ENRICH, ENRICH_CONTINUE, NOW, VERIFIED_AT, TIMESTAMP, EXISTING_MANIFEST,
+  GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, ENRICH_TASK_FILE,
+  ENRICH_SCHEMA_FILE, ENRICH_CANDIDATE_FILE, ENRICH_SKILL_FILE,
+  SEMANTIC_STATUSES, HIGH_RISK_SEMANTICS,
   MODULES, PROJECT_SCOPES, COMMON_SHARED_TEMPLATES, FRONTEND_SHARED_TEMPLATES,
   BACKEND_SHARED_TEMPLATES, SCOPE_CRITICAL_DIRS, COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
   facts, answers, moduleChoices, ui,
