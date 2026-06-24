@@ -5,11 +5,11 @@ const {
   facts, ui, note, warn, markdownValue
 } = require('./context.cjs')
 const { scanAll } = require('./scan.cjs')
-const { makeReadline, askYesNo, collectAnswers } = require('./wizard.cjs')
+const { makeReadline, askYesNo, collectAnswers, directoryGapWarnings } = require('./wizard.cjs')
 const {
   renderStatusLines, backupExisting, cleanupGenerated, copyShared, ensureCustomRules,
   ensureSemanticsStore, renderAgents, renderIndex, renderSummary, renderProjectRules,
-  renderSemanticWorkflow, renderFacts
+  renderSemanticWorkflow, renderSemanticSkill, renderFacts
 } = require('./render.cjs')
 const { verify } = require('./verify.cjs')
 
@@ -40,6 +40,11 @@ async function main() {
 
   note('模块覆盖状态')
   process.stdout.write(`${renderStatusLines(Object.keys(MODULES))}\n`)
+  const directoryGaps = directoryGapWarnings()
+  if (directoryGaps.length) {
+    note('目录识别缺口')
+    directoryGaps.forEach(message => warn(message))
+  }
   if (!NON_INTERACTIVE) {
     makeReadline()
     if (!(await askYesNo('确认备份现有规则并生成？', true))) {
@@ -60,6 +65,7 @@ async function main() {
   renderSummary()
   renderProjectRules()
   renderSemanticWorkflow()
+  renderSemanticSkill()
   renderFacts()
 
   note('完成')

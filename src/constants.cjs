@@ -37,6 +37,16 @@ const BACKEND_SHARED_TEMPLATES = [
   'shared-backend-observability.md'
 ]
 
+// Load-bearing directories whose absence, for a given scope, almost always
+// means the scanner failed to recognize the project layout (not that the
+// directory is genuinely missing). Used to surface detection gaps instead of
+// silently emitting empty page/route/api/backend rules.
+const SCOPE_CRITICAL_DIRS = {
+  frontend: [['dir.pages', '页面 / 视图目录']],
+  backend: [['dir.backendEntry', '后端入口目录']],
+  fullstack: [['dir.pages', '页面 / 视图目录'], ['dir.backendEntry', '后端入口目录']]
+}
+
 const COVERAGE_CATALOG = {
   architecture: [
     ['architecture.identity', '项目身份、业务描述、类型、侧重和技术栈', ['project.name', 'project.description', 'project.kind', 'project.scope', 'stack.technologies']],
@@ -120,6 +130,7 @@ module.exports = {
   COMMON_SHARED_TEMPLATES,
   FRONTEND_SHARED_TEMPLATES,
   BACKEND_SHARED_TEMPLATES,
+  SCOPE_CRITICAL_DIRS,
   COVERAGE_CATALOG,
   BUSINESS_CONTRACT_FACTS
 }

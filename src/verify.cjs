@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const {
   SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, STRICT, SEMANTICS_FILE, SEMANTIC_STATUSES,
-  HIGH_RISK_SEMANTICS, MODULES, PROJECT_SCOPES, COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
+  HIGH_RISK_SEMANTICS, MODULES, PROJECT_SCOPES, SCOPE_CRITICAL_DIRS, COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
   facts, note, exists, read, fingerprint, fact, hashFile
 } = require('./context.cjs')
 const { collectDomainMap, collectTestFiles, getGitSnapshot } = require('./scan.cjs')
@@ -142,6 +142,11 @@ function verify() {
   }
   const ageDays = Math.floor((Date.now() - new Date(manifest.generatedAt).getTime()) / 86400000)
   if (ageDays > (manifest.staleAfterDays || 30)) warnings.push(`事实清单已超过 ${manifest.staleAfterDays || 30} 天未核验。`)
+  for (const [id, label] of SCOPE_CRITICAL_DIRS[manifestScope] || []) {
+    const answer = manifest.answers && manifest.answers[id]
+    const addressed = manifestFact(id) || (answer && ['user-confirmed', 'not-applicable'].includes(answer.status))
+    if (!addressed) warnings.push(`未识别到${label}，相关页面/路由/API 或后端规则可能为空；可重新运行并在“目录补充”填写实际路径。`)
+  }
   const gitSnapshot = getGitSnapshot()
   const recordedGitRepository = manifestFact('git.repository')
   const currentGitRepository = Boolean(gitSnapshot)

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/forbel/Documents/Programs/eticket/event-mgmt-h5/.agent-rules/**)"
+    ]
+  }
+}

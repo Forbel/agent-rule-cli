@@ -1,20 +1,54 @@
+const fs = require('fs')
 const readline = require('readline')
 const path = require('path')
 const {
-  ROOT, NON_INTERACTIVE, VERIFIED_AT, EXISTING_MANIFEST, MODULES,
+  ROOT, NON_INTERACTIVE, VERIFIED_AT, EXISTING_MANIFEST, MODULES, SCOPE_CRITICAL_DIRS,
   facts, answers, moduleChoices, ui,
-  note, exists, addFact, fact, factValue, previousValue, markdownValue
+  note, warn, exists, addFact, fact, factValue, previousValue, markdownValue
 } = require('./context.cjs')
 const { projectScope } = require('./render.cjs')
-const { inferProjectScope } = require('./scan.cjs')
+const { inferProjectScope, scanDomains } = require('./scan.cjs')
 
+// A persistent line listener with a queue, rather than repeated rl.question
+// calls. With piped (non-TTY) input readline emits buffered lines faster than
+// rl.question can re-attach its one-shot handler, so lines get dropped; queuing
+// keeps a 1:1 mapping between input lines and questions and lets scripted runs
+// work. ui.closed (set on EOF) is sticky so any question past end-of-input
+// resolves to its default instead of hanging.
 function makeReadline() {
+  ui.closed = Boolean(process.stdin.readableEnded)
   ui.rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  ui.queue = []
+  ui.waiter = null
+  ui.rl.on('line', line => {
+    const value = line.trim()
+    if (ui.waiter) {
+      const resolve = ui.waiter
+      ui.waiter = null
+      resolve(value)
+    } else {
+      ui.queue.push(value)
+    }
+  })
+  ui.rl.on('close', () => {
+    ui.closed = true
+    if (ui.waiter) {
+      const resolve = ui.waiter
+      ui.waiter = null
+      resolve('')
+    }
+  })
 }
 
 function question(prompt) {
   if (NON_INTERACTIVE) return Promise.resolve('')
-  return new Promise(resolve => ui.rl.question(prompt, answer => resolve(answer.trim())))
+  if (ui.queue && ui.queue.length) {
+    if (prompt) process.stdout.write(prompt)
+    return Promise.resolve(ui.queue.shift())
+  }
+  if (ui.closed) return Promise.resolve('')
+  if (prompt) process.stdout.write(prompt)
+  return new Promise(resolve => { ui.waiter = resolve })
 }
 
 async function askText(label, defaultValue = '') {
@@ -109,6 +143,138 @@ function commandSummary() {
   }).join('；')
 }
 
+// Generic fallback for directories the scanner could not auto-detect. The scan
+// step only knows a fixed set of path conventions; when a project uses a layout
+// it does not recognize (Next.js App Router, monorepos, custom structures) the
+// relevant dir fact is silently left undefined. Rather than chase every new
+// convention in the scanner, this lets the user supply the real path so pages /
+// router / api / backend layering still flow into the rules.
+const DIRECTORY_FALLBACK_LABELS = {
+  'dir.pages': '页面 / 视图目录',
+  'dir.router': '路由定义目录',
+  'dir.api': 'API / service 请求目录',
+  'dir.features': '业务域 / feature 目录',
+  'dir.backendEntry': '后端入口目录',
+  'dir.controllers': 'Controller / 路由处理目录',
+  'dir.services': 'Service / use case 目录',
+  'dir.repositories': 'Repository / DAO 目录',
+  'dir.models': '领域 / 数据模型目录'
+}
+
+function scopeFallbackDirIds(scope) {
+  const frontend = ['dir.pages', 'dir.router', 'dir.api', 'dir.features']
+  const backend = ['dir.backendEntry', 'dir.controllers', 'dir.services', 'dir.repositories', 'dir.models']
+  if (scope === 'backend') return backend
+  if (scope === 'fullstack') return [...frontend, ...backend]
+  return frontend
+}
+
+function isDirectory(relative) {
+  if (!relative) return false
+  try {
+    return fs.statSync(path.join(ROOT, relative)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function fallbackDirectorySuggestions() {
+  const ignore = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'out', 'coverage', 'target', 'vendor', '.cache', 'public', '.agent-rules'])
+  const seen = new Set()
+  const out = []
+  const walk = (base, depth) => {
+    let entries
+    try {
+      entries = fs.readdirSync(path.join(ROOT, base), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || ignore.has(entry.name)) continue
+      const relative = base ? `${base}/${entry.name}` : entry.name
+      if (!seen.has(relative)) {
+        seen.add(relative)
+        out.push(relative)
+      }
+      if (depth > 0) walk(relative, depth - 1)
+    }
+  }
+  walk('', 1)
+  if (isDirectory('src')) walk('src', 1)
+  return out.slice(0, 40)
+}
+
+function recordDirectoryFact(id, value) {
+  addFact(id, 'architecture', value, 'user-confirmed', 'wizard', value)
+  answers[id] = { value, status: 'user-confirmed', verifiedAt: VERIFIED_AT }
+}
+
+// Record an explicit "this project has no such directory" decision. There is no
+// fact to add (the value is empty), but persisting the answer stops re-runs and
+// --verify from re-flagging a gap the user already addressed.
+function markDirectoryAbsent(id) {
+  answers[id] = { value: '', status: 'not-applicable', verifiedAt: VERIFIED_AT }
+}
+
+function previousAnswer(id) {
+  return EXISTING_MANIFEST && EXISTING_MANIFEST.answers && EXISTING_MANIFEST.answers[id]
+}
+
+// Scope-critical directories that ended up neither detected nor addressed by the
+// user. Their absence almost always means the layout was not recognized, so the
+// generated page/route/api/backend rules would be silently empty.
+function directoryGapWarnings() {
+  const critical = SCOPE_CRITICAL_DIRS[projectScope()] || []
+  return critical
+    .filter(([id]) => !factValue(id) && !(answers[id] && ['user-confirmed', 'not-applicable'].includes(answers[id].status)))
+    .map(([, label]) => `未识别到${label}（已知目录约定均未命中），相关页面/路由/API 或后端规则会是空的。请重新运行并在“目录补充”填写实际路径，或在 project-custom.md 标注该目录确实不存在。`)
+}
+
+async function askDirectory(id) {
+  const label = DIRECTORY_FALLBACK_LABELS[id]
+  const previous = previousValue(id, '')
+  while (true) {
+    const value = await askText(`${label}（实际路径，留空表示没有）`, previous)
+    if (!value) return ''
+    if (isDirectory(value)) return value
+    if (ui.closed) return ''
+    warn(`目录不存在：${value}，请重新输入或留空跳过。`)
+  }
+}
+
+async function confirmDirectories() {
+  const missing = scopeFallbackDirIds(projectScope()).filter(id => !factValue(id))
+  if (!missing.length) return false
+  let changed = false
+  let introduced = false
+  for (const id of missing) {
+    if (NON_INTERACTIVE) {
+      const previous = previousAnswer(id)
+      if (previous && previous.status === 'user-confirmed' && isDirectory(previous.value)) {
+        recordDirectoryFact(id, previous.value)
+        changed = true
+      } else if (previous && previous.status === 'not-applicable') {
+        markDirectoryAbsent(id)
+      }
+      continue
+    }
+    if (!introduced) {
+      note('目录补充：以下目录未能自动识别，请确认实际路径（留空表示项目确实没有该目录）')
+      const suggestions = fallbackDirectorySuggestions()
+      if (suggestions.length) process.stdout.write(`可参考目录：${suggestions.map(dir => `\`${dir}\``).join('、')}\n`)
+      introduced = true
+    }
+    const value = await askDirectory(id)
+    if (value) {
+      recordDirectoryFact(id, value)
+      changed = true
+    } else {
+      markDirectoryAbsent(id)
+    }
+  }
+  return changed
+}
+
 async function collectAnswers() {
   const hasExistingProjectEvidence = exists('.git') || ['package.json', 'pyproject.toml', 'Cargo.toml', 'go.mod', 'pom.xml', 'composer.json'].some(exists)
   const previousKind = previousValue('project.kind', '')
@@ -130,6 +296,10 @@ async function collectAnswers() {
   recordAnswer('project.name', 'architecture', projectName)
   recordAnswer('project.description', 'architecture', await askText('项目业务描述', previousValue('project.description', '未定义，新增场景需人工确认')))
   recordAnswer('project.outputLanguage', 'architecture', await askText('AI 回复、规则文档、交付说明默认语言', previousValue('project.outputLanguage', '中文')))
+
+  // Recompute the domain map only when the user actually supplied a directory
+  // the scanner missed, so domain.map / code inventory / reuse pick it up.
+  if (await confirmDirectories()) scanDomains()
 
   await configureModule('architecture', [
     { id: 'policy.directoryBoundaries', label: '页面、服务、共享、API、状态和资源目录边界', defaultValue: isBackendScope ? '以扫描确认的目录为准；入口层只做协议适配，业务规则进入 service/domain，数据访问进入 repository/DAO' : '以扫描确认的目录为准；页面私有逻辑保持局部，稳定跨域能力进入共享目录' },
@@ -223,5 +393,6 @@ async function collectAnswers() {
 module.exports = {
   makeReadline, question, askText, askYesNo, askChoice, recordAnswer,
   evidenceLabel, evidenceLabels, moduleFindings, configureModule,
-  commandSummary, collectAnswers
+  scopeFallbackDirIds, isDirectory, fallbackDirectorySuggestions,
+  confirmDirectories, directoryGapWarnings, commandSummary, collectAnswers
 }

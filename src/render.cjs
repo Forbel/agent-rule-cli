@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const {
   PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, NOW, VERIFIED_AT, TIMESTAMP,
-  GENERATED_ARTIFACTS, SEMANTICS_FILE, MODULES, PROJECT_SCOPES,
+  GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, MODULES, PROJECT_SCOPES,
   COMMON_SHARED_TEMPLATES, FRONTEND_SHARED_TEMPLATES, BACKEND_SHARED_TEMPLATES,
   COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
   facts, answers, moduleChoices,
@@ -297,10 +297,48 @@ function renderSemanticWorkflow() {
 
 \`project-semantics.json\` 由维护者和 agent 增量维护，生成器不会覆盖；除该文件外的语义判断不得绕过本流程直接写入其他规则文件。
 
+## 会话级对账（reconcile）
+
+一段业务分析完成、或会话结束前，可对本次会话产出做一次性对账，把"本次分析出的所有业务点"与语义层核对。本节与具体工具无关，任何 agent 都可执行；Claude Code 用户可用生成的 \`/sync-semantics\` skill 触发。
+
+1. **前置**：若 \`project-semantics.json\` 不存在先创建 \`{ "schemaVersion": 1, "entries": [] }\`；运行 \`${COMMAND} --verify --strict\` 记下当前告警（高风险未确认、来源已变化），本次一并处理。
+2. **收集**：回顾本次会话中分析、确认或推断出的、代码无法自证的业务点，拆成原子点，只纳入有依据的。
+3. **逐点对账**：
+   - 无记录 → 按上方 schema 新增（\`inferred\` / \`recordedBy=ai\` / 带 evidenceRefs）。
+   - 已有且一致（仅印证或细化）→ 不改动；若已有为 \`inferred\` 且本次予以印证，提示用户是否升 \`user-confirmed\`，不擅自升级。
+   - 已有但冲突（与已有 \`statement\` 对同一业务点相互矛盾）→ 停下，把"已有 vs 本次"并列给用户裁定，仅按用户决定更新，不自动覆盖。
+   - 已有但来源已变化（verify 标了漂移且本次恰好涉及）→ 依最新代码复核 \`statement\` 与 \`evidenceRefs\`。
+4. **高风险**按上方"高风险必须确认"处理，未确认保持 \`inferred\`。
+5. **收尾**：只增改本次涉及的条目；运行 \`${COMMAND} --verify --strict\`，修结构错误、列剩余警告；一段话汇报新增 / 冲突裁定 / 不变 / 待确认。
+
+冲突 = 新分析与已有条目对**同一业务点**给出**相互矛盾**的取值/规则；补充字段、细化条件、举例说明都不算冲突。
+
 ## 各 agent 接入
 
-- 任何读取 \`AGENTS.md → project-index.md\` 的 agent：通过索引"业务语义"路由自动进入本流程，无需额外配置。
-- 需要显式触发器的 agent（如 Claude skill、Cursor rule）：用一个仅指向本文件的薄适配器，不复制流程正文，保持本文件为唯一事实源。`)
+- **任何读取 \`AGENTS.md → project-index.md\` 的 agent（含 Codex）**：通过索引"业务语义"路由自动进入 per-task 流程，无需配置；会话级对账直接执行上一节。
+- **Claude Code**：生成的 \`.claude/skills/sync-semantics/SKILL.md\` 提供 \`/sync-semantics\` 触发，内容仅指向本文件，不复制正文。
+- **Codex / Cursor 等**：其快捷命令是用户级而非项目级，工具无法预装。直接对 agent 说"按本文件的会话级对账小节核对本次会话业务点"即可；若想要 \`/\` 快捷命令，可在用户级 prompt 目录（如 Codex 的 \`~/.codex/prompts/\`）放一个仅指向本文件对账小节的 prompt，自行安装一次。`)
+}
+
+function renderSemanticSkill() {
+  write(SEMANTIC_SKILL_FILE, `---
+name: sync-semantics
+description: 触发 .agent-rules/semantic-workflow.md 的"会话级对账"——回顾本次会话分析出的业务点，与语义层对账：缺则补、冲突请用户确认、一致不动，并运行 ${COMMAND} --verify --strict。
+disable-model-invocation: true
+---
+
+# sync-semantics
+
+完整执行 \`.agent-rules/semantic-workflow.md\` 中"## 会话级对账（reconcile）"小节的流程，对本次会话分析出的业务点与 \`.agent-rules/project-semantics.json\` 对账。该文件是唯一事实源，schema、字段规则与对账细节均以其为准。
+
+要点（细节见 semantic-workflow.md）：
+
+- 只落盘本次**真实分析出、且有代码依据**的业务点，不得凭空发明。
+- **无记录** → 按 schema 新增（\`inferred\` / \`recordedBy=ai\` / 带 evidenceRefs，\`shasum -a 256 <文件> | cut -d' ' -f1\` 算 sha256）。
+- **冲突** → 停下，把"已有 vs 本次"并列给用户裁定，不自动覆盖。
+- **一致** → 不动；已有 \`inferred\` 被本次印证则提示用户是否升 \`user-confirmed\`，不擅自升级。
+- 金额/权限/状态等**高风险**未经用户确认保持 \`inferred\`。
+- 收尾运行 \`${COMMAND} --verify --strict\` 并汇报新增 / 冲突裁定 / 不变 / 待确认。`)
 }
 
 function renderProjectRules() {
@@ -744,6 +782,6 @@ module.exports = {
   moduleStatus, statusLabel, coverageLabel, dimensionLabel, metadata, sourceFact,
   write, copyDirectory, copyShared, projectScope, selectedSharedTemplates,
   sharedTemplateExists, renderStatusLines, renderAgents, ensureCustomRules,
-  ensureSemanticsStore, renderIndex, renderSummary, renderSemanticWorkflow,
+  ensureSemanticsStore, renderIndex, renderSummary, renderSemanticWorkflow, renderSemanticSkill,
   renderProjectRules, renderFacts, backupExisting, cleanupGenerated
 }

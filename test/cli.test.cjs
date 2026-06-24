@@ -10,6 +10,8 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 const CLI = path.join(REPO_ROOT, 'agent-rules-init.cjs')
 const { calculateManifestModule } = require('../src/verify-core.cjs')
 const { COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS } = require('../src/constants.cjs')
+const { ui } = require('../src/context.cjs')
+const { makeReadline } = require('../src/wizard.cjs')
 
 const tests = []
 
@@ -60,7 +62,8 @@ function cleanup(root) {
 function runCli(args, options) {
   const result = spawnSync(process.execPath, [CLI].concat(args), {
     cwd: options && options.cwd ? options.cwd : REPO_ROOT,
-    encoding: 'utf8'
+    encoding: 'utf8',
+    input: options && options.input !== undefined ? options.input : undefined
   })
   result.outputText = `${result.stdout || ''}${result.stderr || ''}`
   return result
@@ -94,6 +97,16 @@ test('prints help', () => {
   assert(result.status === 0, `help should exit 0, got ${result.status}\n${result.outputText}`)
   assertIncludes(result.outputText, '用法：', 'help output')
   assertIncludes(result.outputText, 'npx agent-rule-cli', 'help output')
+})
+
+test('makeReadline resets closed state for repeated confirmations', () => {
+  ui.closed = true
+  makeReadline()
+  assert(ui.closed === false, 'makeReadline should clear stale closed state before asking again')
+  ui.rl.close()
+  ui.closed = false
+  ui.queue = []
+  ui.waiter = null
 })
 
 test('unit tests manifest coverage calculation without running CLI', () => {
@@ -131,6 +144,88 @@ test('generates and verifies a frontend fixture', () => {
     assert(fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'frontend project should include UI project rules')
     assert(fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'frontend project should include UI shared rules')
     assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('lets the user supply directories the scanner missed (Next.js App Router)', () => {
+  const root = makeTempProject('dir-fallback')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
+    // App Router layout: pages under src/app, API routes under src/app/api — none
+    // of these match the scanner's built-in dir.pages / dir.api candidates.
+    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    write(path.join(root, 'src/app/api/orders/route.ts'), 'export async function GET() {}\n')
+    write(path.join(root, 'src/components/Foo.tsx'), 'export default function Foo() {}\n')
+    // Interactive answers: 6 leading defaults (continue/kind/scope/name/desc/lang),
+    // then the directory fallback prompts (pages, router, api, features). EOF after
+    // that makes every remaining question fall back to its default.
+    const input = ['', '', '', '', '', '', 'src/app', '', 'src/app/api', ''].join('\n') + '\n'
+    const result = runCli(['--root', root], { input })
+    assert(result.status === 0, `interactive generate should exit 0, got ${result.status}\n${result.outputText}`)
+    const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+    assertIncludes(architecture, '页面目录：src/app', 'architecture should record the user-supplied pages dir')
+    assertIncludes(architecture, 'API / service 目录：src/app/api', 'architecture should record the user-supplied api dir')
+    const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+    assertIncludes(map, '`src/app/api/orders/route.ts`', 'domain map should pick up api files once the dir is supplied')
+    assert(map.indexOf('未检测到 API 文件') < 0, 'domain map should no longer report missing API files')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('preserves user-supplied directories across regeneration with --defaults', () => {
+  const root = makeTempProject('dir-fallback-persist')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    write(path.join(root, 'src/app/api/orders/route.ts'), 'export async function GET() {}\n')
+    const input = ['', '', '', '', '', '', 'src/app', '', 'src/app/api', ''].join('\n') + '\n'
+    assert(runCli(['--root', root], { input }).status === 0, 'interactive generate should exit 0')
+    // A non-interactive regeneration must not lose the user-confirmed directories.
+    generate(root)
+    const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+    assertIncludes(architecture, '页面目录：src/app', 'regeneration should preserve the supplied pages dir')
+    assertIncludes(architecture, 'API / service 目录：src/app/api', 'regeneration should preserve the supplied api dir')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('surfaces a directory-detection gap when --defaults cannot find scope-critical dirs', () => {
+  const root = makeTempProject('dir-gap')
+  try {
+    // App Router frontend whose pages live under src/app — not matched by the
+    // scanner — and --defaults never prompts, so the gap must be made visible.
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    const result = generate(root)
+    assertIncludes(result.outputText, '目录识别缺口', 'generation should announce a directory gap section')
+    assertIncludes(result.outputText, '未识别到页面 / 视图目录', 'generation should name the missing scope-critical dir')
+    // verify must keep surfacing the gap (as a warning, not a hard error)
+    const verifyResult = verify(root)
+    assert(verifyResult.status === 0, `verify should still pass (warning only), got ${verifyResult.status}\n${verifyResult.outputText}`)
+    assertIncludes(verifyResult.outputText, '未识别到页面 / 视图目录', 'verify should warn about the unresolved directory gap')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('directory gap is suppressed once the user supplies or skips the directory', () => {
+  const root = makeTempProject('dir-gap-resolved')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    // Interactive run where the user explicitly skips every fallback prompt
+    // (all blank). That records a confirmed-absent decision, so no gap warning.
+    const input = ['', '', '', '', '', '', '', '', '', ''].join('\n') + '\n'
+    const result = runCli(['--root', root], { input })
+    assert(result.status === 0, `interactive generate should exit 0, got ${result.status}\n${result.outputText}`)
+    assert(result.outputText.indexOf('目录识别缺口') < 0, 'an explicitly skipped directory must not be reported as a gap')
+    assert(verify(root).outputText.indexOf('未识别到页面 / 视图目录') < 0, 'verify must not nag about a user-confirmed-absent directory')
   } finally {
     cleanup(root)
   }
@@ -261,11 +356,31 @@ test('generates the agent-agnostic semantic workflow document', () => {
     assertIncludes(text, 'project-semantics.json', 'workflow should reference the semantic store')
     assertIncludes(text, 'evidenceRefs', 'workflow should document the entry schema')
     assertIncludes(text, 'Codex', 'workflow should be framed as agent-agnostic')
+    assertIncludes(text, '会话级对账', 'workflow should host the agent-agnostic reconcile procedure')
     // index must route business-semantic tasks to the workflow doc
     assertIncludes(fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8'), 'semantic-workflow.md', 'index should route to the workflow')
     // tampering with the workflow doc must be caught as artifact drift
     fs.appendFileSync(wf, '\nmanual drift\n')
     assertVerifyFails(root, '生成产物已漂移：.agent-rules/semantic-workflow.md')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('generates the sync-semantics skill adapter', () => {
+  const root = makeTempProject('semantic-skill')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    const skill = path.join(root, '.claude/skills/sync-semantics/SKILL.md')
+    assert(fs.existsSync(skill), 'sync-semantics SKILL.md should be generated')
+    const text = fs.readFileSync(skill, 'utf8')
+    assertIncludes(text, 'name: sync-semantics', 'skill should carry frontmatter name')
+    assertIncludes(text, 'project-semantics.json', 'skill should target the semantic store')
+    assertIncludes(text, '冲突', 'skill should encode the conflict-aware reconciliation loop')
+    assertIncludes(text, '--verify --strict', 'skill should end with strict verification')
+    fs.appendFileSync(skill, '\nmanual drift\n')
+    assertVerifyFails(root, '生成产物已漂移：.claude/skills/sync-semantics/SKILL.md')
   } finally {
     cleanup(root)
   }

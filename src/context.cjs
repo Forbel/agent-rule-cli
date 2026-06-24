@@ -37,6 +37,7 @@ const {
   COMMON_SHARED_TEMPLATES,
   FRONTEND_SHARED_TEMPLATES,
   BACKEND_SHARED_TEMPLATES,
+  SCOPE_CRITICAL_DIRS,
   COVERAGE_CATALOG,
   BUSINESS_CONTRACT_FACTS
 } = require('./constants.cjs')
@@ -67,7 +68,8 @@ const GENERATED_ARTIFACTS = [
   '.agent-rules/project-git-delivery.md',
   '.agent-rules/project-business-rules.md',
   '.agent-rules/project-domain-map.md',
-  '.agent-rules/semantic-workflow.md'
+  '.agent-rules/semantic-workflow.md',
+  '.claude/skills/sync-semantics/SKILL.md'
 ]
 
 // Curated, persistent semantic store. Like project-custom.md it is never
@@ -75,6 +77,7 @@ const GENERATED_ARTIFACTS = [
 // fixing bugs, changing requirements or adding modules. Verified for schema,
 // provenance and source drift, not for content stability.
 const SEMANTICS_FILE = '.agent-rules/project-semantics.json'
+const SEMANTIC_SKILL_FILE = '.claude/skills/sync-semantics/SKILL.md'
 const SEMANTIC_STATUSES = new Set(['inferred', 'user-confirmed'])
 const HIGH_RISK_SEMANTICS = ['金额', '权限', '状态', '审核', '支付', '订单', '退款', '删除', '禁用', '库存', '结算', '余额', '优惠']
 
@@ -211,9 +214,9 @@ function hashFile(file) {
 module.exports = {
   PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, VERIFY_ONLY, STRICT,
   NON_INTERACTIVE, SHOW_HELP, NOW, VERIFIED_AT, TIMESTAMP, EXISTING_MANIFEST,
-  GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_STATUSES, HIGH_RISK_SEMANTICS,
+  GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, SEMANTIC_STATUSES, HIGH_RISK_SEMANTICS,
   MODULES, PROJECT_SCOPES, COMMON_SHARED_TEMPLATES, FRONTEND_SHARED_TEMPLATES,
-  BACKEND_SHARED_TEMPLATES, COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
+  BACKEND_SHARED_TEMPLATES, SCOPE_CRITICAL_DIRS, COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
   facts, answers, moduleChoices, ui,
   note, warn, exists, read, readJson, run, evidencePath, fingerprint, addFact,
   fact, factValue, previousValue, markdownValue, listFiles, firstExisting,
