@@ -8,6 +8,7 @@ const { spawnSync } = require('child_process')
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const CLI = path.join(REPO_ROOT, 'agent-rules-init.cjs')
+const FIXTURE_ROOT = path.join(REPO_ROOT, 'test', 'fixtures')
 const { calculateManifestModule } = require('../src/verify-core.cjs')
 const { COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS } = require('../src/constants.cjs')
 const { ui } = require('../src/context.cjs')
@@ -56,6 +57,22 @@ function makeTempProject(name) {
   return root
 }
 
+function copyFixtureProject(name) {
+  const root = makeTempProject(`fixture-${name}`)
+  const source = path.join(FIXTURE_ROOT, name)
+  const copy = (from, to) => {
+    mkdirp(to)
+    for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+      const sourcePath = path.join(from, entry.name)
+      const targetPath = path.join(to, entry.name)
+      if (entry.isDirectory()) copy(sourcePath, targetPath)
+      else fs.copyFileSync(sourcePath, targetPath)
+    }
+  }
+  copy(source, root)
+  return root
+}
+
 function cleanup(root) {
   if (!root || !fs.existsSync(root)) return
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -86,6 +103,18 @@ function verify(root) {
   return runCli(['--verify', '--root', root])
 }
 
+function doctor(root) {
+  return runCli(['--doctor', '--root', root])
+}
+
+function diffRules(root) {
+  return runCli(['--diff', '--root', root])
+}
+
+function semanticsCheck(root) {
+  return runCli(['--semantics', 'check', '--root', root])
+}
+
 function assertVerifyOk(root) {
   const result = verify(root)
   assert(result.status === 0, `verify should exit 0, got ${result.status}\n${result.outputText}`)
@@ -105,6 +134,11 @@ test('prints help', () => {
   assertIncludes(result.outputText, '用法：', 'help output')
   assertIncludes(result.outputText, 'npx agent-rule-cli', 'help output')
   assertIncludes(result.outputText, '--enrich', 'help output')
+  assertIncludes(result.outputText, '--doctor', 'help output')
+  assertIncludes(result.outputText, '--diff', 'help output')
+  assertIncludes(result.outputText, '--migrate', 'help output')
+  assertIncludes(result.outputText, '--profile', 'help output')
+  assertIncludes(result.outputText, '--semantics', 'help output')
 })
 
 test('makeReadline resets closed state for repeated confirmations', () => {
@@ -180,6 +214,170 @@ test('rules index references every generated project and shared rule', () => {
     }
   } finally {
     cleanup(root)
+  }
+})
+
+test('minimal profile generates a compact rule set without dangling index references', () => {
+  const root = makeTempProject('profile-minimal')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    const result = runCli(['--profile', 'minimal', '--defaults', '--root', root])
+    assert(result.status === 0, `minimal profile should exit 0, got ${result.status}\n${result.outputText}`)
+    assert(fs.existsSync(path.join(root, '.agent-rules/project-architecture.md')), 'minimal should include architecture rules')
+    assert(fs.existsSync(path.join(root, '.agent-rules/project-code-quality.md')), 'minimal should include code quality rules')
+    assert(fs.existsSync(path.join(root, '.agent-rules/project-testing-quality-gates.md')), 'minimal should include testing rules')
+    assert(!fs.existsSync(path.join(root, '.agent-rules/project-ui-rules.md')), 'minimal should skip UI project rules')
+    assert(!fs.existsSync(path.join(root, '.agent-rules/project-api-error-handling.md')), 'minimal should skip API project rules')
+    assert(!fs.existsSync(path.join(root, '.agent-rules/project-state-data-flow.md')), 'minimal should skip state project rules')
+    assert(!fs.existsSync(path.join(root, '.agent-rules/shared-ui-rules.md')), 'minimal should skip UI shared rules')
+    assert(!fs.existsSync(path.join(root, '.agent-rules/shared-api-error-handling.md')), 'minimal should skip API shared rules')
+    const index = fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8')
+    assertIncludes(index, '规则 profile：minimal', 'minimal index')
+    assert(index.indexOf('project-ui-rules.md') < 0, 'minimal index must not reference skipped UI rules')
+    assert(index.indexOf('project-api-error-handling.md') < 0, 'minimal index must not reference skipped API rules')
+    const manifest = readJson(path.join(root, '.agent-rules/project-facts.json'))
+    assert(manifest.ruleProfile === 'minimal', 'manifest should record the minimal profile')
+    assert(manifest.sharedTemplates.includes('shared-code-quality.md'), 'minimal manifest should include code quality shared template')
+    assert(!manifest.sharedTemplates.includes('shared-ui-rules.md'), 'minimal manifest should not include UI shared template')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('strict profile treats generation warnings as strict verification failures', () => {
+  const root = makeTempProject('profile-strict')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    const result = runCli(['--profile', 'strict', '--defaults', '--root', root])
+    assert(result.status === 2, `strict profile should exit 2 on warnings, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '校验完成：无结构错误，但仍有需要处理的警告。', 'strict profile output')
+    const manifest = readJson(path.join(root, '.agent-rules/project-facts.json'))
+    assert(manifest.ruleProfile === 'strict', 'manifest should record the strict profile')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('doctor reports healthy generated rules', () => {
+  const root = makeTempProject('doctor-ok')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    const result = doctor(root)
+    assert(result.status === 0, `doctor should exit 0, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '通过：规则目录结构', 'doctor output')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('diff and doctor report generated artifact drift', () => {
+  const root = makeTempProject('maintenance-drift')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    write(path.join(root, '.agent-rules/project-index.md'), '# manually edited\n')
+    const diff = diffRules(root)
+    assert(diff.status === 0, `diff should exit 0, got ${diff.status}\n${diff.outputText}`)
+    assertIncludes(diff.outputText, 'project-index.md', 'diff output')
+    assertIncludes(diff.outputText, 'changed', 'diff output')
+    const diagnosis = doctor(root)
+    assert(diagnosis.status === 0, `doctor should warn but exit 0 for drift, got ${diagnosis.status}\n${diagnosis.outputText}`)
+    assertIncludes(diagnosis.outputText, '生成产物已修改：.agent-rules/project-index.md', 'doctor output')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('migrate rebuilds generated artifacts and preserves curated files', () => {
+  const root = makeTempProject('migrate')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    write(path.join(root, '.agent-rules/project-custom.md'), '# Custom\n\n- keep me\n')
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [{
+        id: 'demo.rule',
+        domain: 'demo',
+        statement: 'keep semantic entry',
+        status: 'inferred',
+        verifiedAt: '2026-06-30'
+      }]
+    })
+    write(path.join(root, '.agent-rules/project-index.md'), '# drift\n')
+    const result = runCli(['--migrate', '--root', root])
+    assert(result.status === 0, `migrate should exit 0, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '已迁移并重新生成规则', 'migrate output')
+    const index = fs.readFileSync(path.join(root, '.agent-rules/project-index.md'), 'utf8')
+    assertIncludes(index, '# 规则索引', 'migrate should rebuild project-index')
+    assertIncludes(fs.readFileSync(path.join(root, '.agent-rules/project-custom.md'), 'utf8'), 'keep me', 'migrate should preserve custom rules')
+    const semantics = readJson(path.join(root, '.agent-rules/project-semantics.json'))
+    assert(semantics.entries.some(entry => entry.id === 'demo.rule'), 'migrate should preserve semantic entries')
+    assert(fs.readdirSync(root).some(file => file.startsWith('.agent-rules.backup-')), 'migrate should create a backup')
+    assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('fixture matrix generates and verifies representative project shapes', () => {
+  const cases = [
+    {
+      name: 'next-app-router',
+      checks(root) {
+        const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+        const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
+        assertIncludes(architecture, '页面目录：src/app', 'next architecture')
+        assertIncludes(architecture, 'API / service 目录：src/app/api', 'next architecture')
+        assertIncludes(architecture, 'Server Actions 目录：src/lib/actions', 'next architecture')
+        assertIncludes(map, 'orders：`src/app/orders`', 'next domain map')
+        assert(map.indexOf('page：`src/app/page.tsx`') < 0, 'next domain map should omit App Router framework files')
+      }
+    },
+    {
+      name: 'vite-react',
+      checks(root) {
+        const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+        const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+        assertIncludes(architecture, '`React`', 'vite architecture')
+        assertIncludes(architecture, '`Vite`', 'vite architecture')
+        assertIncludes(architecture, '页面目录：src/pages', 'vite architecture')
+        assertIncludes(apiRules, '统一请求入口：src/api/client.ts', 'vite api rules')
+      }
+    },
+    {
+      name: 'express-api',
+      checks(root) {
+        const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+        const backendRules = path.join(root, '.agent-rules/project-backend-api-contracts.md')
+        assert(fs.existsSync(backendRules), 'express fixture should generate backend rules')
+        assertIncludes(apiRules, '请求库：Express', 'express api rules')
+        assertIncludes(apiRules, '当前显式处理的 HTTP 状态：`500`', 'express api rules')
+      }
+    },
+    {
+      name: 'fastapi',
+      checks(root) {
+        const apiRules = fs.readFileSync(path.join(root, '.agent-rules/project-api-error-handling.md'), 'utf8')
+        const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
+        assertIncludes(apiRules, '请求库：FastAPI', 'fastapi api rules')
+        assertIncludes(architecture, '后端入口目录：app', 'fastapi architecture')
+        assert(fs.existsSync(path.join(root, '.agent-rules/project-backend-data-persistence.md')), 'fastapi fixture should generate backend persistence rules')
+      }
+    }
+  ]
+
+  for (const item of cases) {
+    const root = copyFixtureProject(item.name)
+    try {
+      generate(root)
+      assertVerifyOk(root)
+      item.checks(root)
+    } finally {
+      cleanup(root)
+    }
   }
 })
 
@@ -436,46 +634,56 @@ test('detects Express backend API facts without directory gap', () => {
   }
 })
 
-test('lets the user supply directories the scanner missed (Next.js App Router)', () => {
-  const root = makeTempProject('dir-fallback')
+test('detects Next.js App Router directories through scanner adapters', () => {
+  const root = makeTempProject('next-app-router')
   try {
     write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0', axios: '^1.0.0' } }, null, 2))
-    // App Router layout: pages under src/app, API routes under src/app/api — none
-    // of these match the scanner's built-in dir.pages / dir.api candidates.
     write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    write(path.join(root, 'src/app/layout.tsx'), 'export default function Layout({ children }) { return children }\n')
+    write(path.join(root, 'src/app/(auth)/login/page.tsx'), 'export default function Login() {}\n')
+    write(path.join(root, 'src/app/[locale]/page.tsx'), 'export default function LocalePage() {}\n')
+    write(path.join(root, 'src/app/orders/page.tsx'), 'export default function Orders() {}\n')
     write(path.join(root, 'src/app/api/orders/route.ts'), 'export async function GET() {}\n')
+    write(path.join(root, 'src/lib/actions/index.ts'), 'export async function createOrder() {}\n')
     write(path.join(root, 'src/components/Foo.tsx'), 'export default function Foo() {}\n')
-    // Interactive answers: 6 leading defaults (continue/kind/scope/name/desc/lang),
-    // then the directory fallback prompts (pages, router, api, features). EOF after
-    // that makes every remaining question fall back to its default.
-    const input = ['', '', '', '', '', '', 'src/app', '', 'src/app/api', ''].join('\n') + '\n'
-    const result = runCli(['--root', root], { input })
-    assert(result.status === 0, `interactive generate should exit 0, got ${result.status}\n${result.outputText}`)
+    const result = generate(root)
+    assert(result.outputText.indexOf('目录识别缺口') < 0, 'Next App Router should not be reported as a directory gap')
     const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
-    assertIncludes(architecture, '页面目录：src/app', 'architecture should record the user-supplied pages dir')
-    assertIncludes(architecture, 'API / service 目录：src/app/api', 'architecture should record the user-supplied api dir')
+    assertIncludes(architecture, '页面目录：src/app', 'architecture should record the adapter-detected pages dir')
+    assertIncludes(architecture, '路由目录：src/app（Next.js App Router 文件系统路由）', 'architecture should explain App Router routing')
+    assertIncludes(architecture, 'API / service 目录：src/app/api', 'architecture should record the adapter-detected api dir')
     const map = fs.readFileSync(path.join(root, '.agent-rules/project-domain-map.md'), 'utf8')
-    assertIncludes(map, '`src/app/api/orders/route.ts`', 'domain map should pick up api files once the dir is supplied')
+    assertIncludes(map, '`src/app/api/orders/route.ts`', 'domain map should pick up api files once the adapter supplies the dir')
+    assertIncludes(map, 'orders：`src/app/orders`', 'domain map should keep real App Router business segments')
+    assert(map.indexOf('api：`src/app/api`') < 0, 'App Router api directory should not be listed as a page domain')
+    assert(map.indexOf('page：`src/app/page.tsx`') < 0, 'App Router page.tsx should not be listed as a business domain')
+    assert(map.indexOf('(auth)') < 0, 'App Router route groups should not be listed as business domains')
+    assert(map.indexOf('[locale]') < 0, 'App Router dynamic segments should not be listed as business domains')
     assert(map.indexOf('未检测到 API 文件') < 0, 'domain map should no longer report missing API files')
+    assertIncludes(architecture, 'Server Actions 目录：src/lib/actions', 'Next scanner should detect lib/actions as server actions')
+    const manifest = readJson(path.join(root, '.agent-rules/project-facts.json'))
+    const pagesDir = manifest.facts.find(item => item.id === 'dir.pages')
+    const routerDir = manifest.facts.find(item => item.id === 'dir.router')
+    assert(pagesDir && pagesDir.source === 'Next.js scanner', 'dir.pages should come from the Next.js scanner')
+    assert(routerDir && routerDir.source === 'Next.js scanner', 'dir.router should come from the Next.js scanner')
     assertVerifyOk(root)
   } finally {
     cleanup(root)
   }
 })
 
-test('preserves user-supplied directories across regeneration with --defaults', () => {
-  const root = makeTempProject('dir-fallback-persist')
+test('preserves adapter-detected directories across regeneration with --defaults', () => {
+  const root = makeTempProject('next-app-router-persist')
   try {
     write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
     write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
     write(path.join(root, 'src/app/api/orders/route.ts'), 'export async function GET() {}\n')
-    const input = ['', '', '', '', '', '', 'src/app', '', 'src/app/api', ''].join('\n') + '\n'
-    assert(runCli(['--root', root], { input }).status === 0, 'interactive generate should exit 0')
-    // A non-interactive regeneration must not lose the user-confirmed directories.
+    generate(root)
+    // A non-interactive regeneration must keep high-confidence adapter facts stable.
     generate(root)
     const architecture = fs.readFileSync(path.join(root, '.agent-rules/project-architecture.md'), 'utf8')
-    assertIncludes(architecture, '页面目录：src/app', 'regeneration should preserve the supplied pages dir')
-    assertIncludes(architecture, 'API / service 目录：src/app/api', 'regeneration should preserve the supplied api dir')
+    assertIncludes(architecture, '页面目录：src/app', 'regeneration should preserve the adapter-detected pages dir')
+    assertIncludes(architecture, 'API / service 目录：src/app/api', 'regeneration should preserve the adapter-detected api dir')
     assertVerifyOk(root)
   } finally {
     cleanup(root)
@@ -485,10 +693,9 @@ test('preserves user-supplied directories across regeneration with --defaults', 
 test('surfaces a directory-detection gap when --defaults cannot find scope-critical dirs', () => {
   const root = makeTempProject('dir-gap')
   try {
-    // App Router frontend whose pages live under src/app — not matched by the
-    // scanner — and --defaults never prompts, so the gap must be made visible.
-    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
-    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    // Non-standard React frontend layout that no framework adapter recognizes.
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'custom-react', dependencies: { react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/screens/Home.tsx'), 'export default function Home() {}\n')
     const result = generate(root)
     assertIncludes(result.outputText, '目录识别缺口', 'generation should announce a directory gap section')
     assertIncludes(result.outputText, '未识别到页面 / 视图目录', 'generation should name the missing scope-critical dir')
@@ -504,8 +711,8 @@ test('surfaces a directory-detection gap when --defaults cannot find scope-criti
 test('directory gap is suppressed once the user supplies or skips the directory', () => {
   const root = makeTempProject('dir-gap-resolved')
   try {
-    write(path.join(root, 'package.json'), JSON.stringify({ name: 'app-router', dependencies: { next: '^14.0.0', react: '^18.0.0' } }, null, 2))
-    write(path.join(root, 'src/app/page.tsx'), 'export default function Page() {}\n')
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'custom-react', dependencies: { react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'src/screens/Home.tsx'), 'export default function Home() {}\n')
     // Interactive run where the user explicitly skips every fallback prompt
     // (all blank). That records a confirmed-absent decision, so no gap warning.
     const input = ['', '', '', '', '', '', '', '', '', ''].join('\n') + '\n'
@@ -703,6 +910,75 @@ test('persists a curated semantic entry across regeneration and verifies it', ()
     assert(readJson(semFile).entries.length === 1, 'regeneration must preserve curated semantics')
     assert(readJson(semFile).entries[0].id === 'checkout.payment-flow', 'regeneration must preserve the entry content')
     assertVerifyOk(root)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('semantics check passes for a healthy semantic store', () => {
+  const root = makeTempProject('semantics-check-ok')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'pages/checkout.js'), 'export default function Checkout() {}\n')
+    generate(root)
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [{
+        id: 'checkout.copy',
+        domain: 'checkout',
+        statement: '结账页面展示提交入口。',
+        status: 'inferred',
+        verifiedAt: '2026-06-30'
+      }]
+    })
+    const result = semanticsCheck(root)
+    assert(result.status === 0, `semantics check should exit 0, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '通过：语义层结构', 'semantics check output')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('semantics check exits 2 for semantic warnings only', () => {
+  const root = makeTempProject('semantics-check-warning')
+  try {
+    write(path.join(root, 'package.json'), JSON.stringify({ name: 'shop', dependencies: { react: '^18.0.0' } }, null, 2))
+    write(path.join(root, 'pages/checkout.js'), 'export default function Checkout() {}\n')
+    generate(root)
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [{
+        id: 'checkout.amount',
+        domain: 'checkout',
+        statement: '金额规则来自当前页面观察，尚未确认。',
+        risk: ['金额'],
+        status: 'inferred',
+        verifiedAt: '2026-06-30'
+      }]
+    })
+    const result = semanticsCheck(root)
+    assert(result.status === 2, `semantics check should exit 2 on warnings, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '高风险语义尚未人工确认：checkout.amount', 'semantics check output')
+    assertIncludes(result.outputText, '检查完成：无结构错误', 'semantics check output')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('semantics check exits 1 for malformed semantic entries', () => {
+  const root = makeTempProject('semantics-check-error')
+  try {
+    mkdirp(path.join(root, 'pages'))
+    generate(root)
+    writeJson(path.join(root, '.agent-rules/project-semantics.json'), {
+      schemaVersion: 1,
+      entries: [
+        { id: 'bad.status', domain: 'pages', statement: 'bad', status: 'guessed', verifiedAt: '2026-06-30' }
+      ]
+    })
+    const result = semanticsCheck(root)
+    assert(result.status === 1, `semantics check should exit 1 on errors, got ${result.status}\n${result.outputText}`)
+    assertIncludes(result.outputText, '语义状态非法：bad.status', 'semantics check output')
   } finally {
     cleanup(root)
   }

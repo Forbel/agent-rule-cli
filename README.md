@@ -27,6 +27,18 @@ npx agent-rule-cli
 npx agent-rule-cli --defaults
 ```
 
+可用 `--profile` 控制规则粒度：
+
+```bash
+npx agent-rule-cli --profile minimal --defaults
+npx agent-rule-cli --profile standard --defaults
+npx agent-rule-cli --profile strict --defaults
+```
+
+- `minimal`：生成入口、架构、代码质量、测试/Git、业务、域地图和语义工作流等基础规则，减少 UI/API/状态/安全/后端细分规则文件。
+- `standard`：默认完整规则集。
+- `strict`：完整规则集，并在生成后按严格校验处理警告。
+
 ### 方式三：AI 增强生成（推荐陌生项目使用）
 
 适合复杂项目、陌生项目、Next.js App Router、monorepo 或非传统目录结构。
@@ -95,6 +107,20 @@ npx agent-rule-cli --verify --strict
 - 规则文件与生成时记录的 hash 不一致。
 
 CI 建议固定使用 `--verify --strict`。不加 `--strict` 时，很多高风险项只会打印警告，命令仍可能退出 `0`。
+
+维护或升级已生成的规则：
+
+```bash
+npx agent-rule-cli --doctor
+npx agent-rule-cli --diff
+npx agent-rule-cli --migrate
+npx agent-rule-cli --semantics check
+```
+
+- `--doctor`：诊断 `.agent-rules/`、`project-facts.json`、生成产物、shared 模板和保留文件是否处于可维护状态。
+- `--diff`：迁移前预览当前生成器版本、manifest 记录、生成产物和 shared 模板的差异；不写入文件。
+- `--migrate`：备份现有规则，用当前 CLI 非交互重渲染生成产物并校验；不会覆盖 `project-custom.md` 和 `project-semantics.json`。
+- `--semantics check`：单独检查语义层结构、高风险确认、业务域关联和 evidence 来源；结构错误返回 `1`，只有警告返回 `2`。
 
 也可以指定其他项目目录：
 

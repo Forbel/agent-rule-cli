@@ -14,13 +14,36 @@ if (rootArgIndex >= 0 && (!args[rootArgIndex + 1] || args[rootArgIndex + 1].star
   process.stderr.write('错误：--root 后需要提供项目目录。\n')
   process.exit(1)
 }
+const profileArgIndex = args.indexOf('--profile')
+if (profileArgIndex >= 0 && (!args[profileArgIndex + 1] || args[profileArgIndex + 1].startsWith('-'))) {
+  process.stderr.write('错误：--profile 后需要提供 minimal、standard 或 strict。\n')
+  process.exit(1)
+}
+const semanticsArgIndex = args.indexOf('--semantics')
+if (semanticsArgIndex >= 0 && (!args[semanticsArgIndex + 1] || args[semanticsArgIndex + 1].startsWith('-'))) {
+  process.stderr.write('错误：--semantics 后需要提供 check。\n')
+  process.exit(1)
+}
+const SEMANTICS_COMMAND = semanticsArgIndex >= 0 ? args[semanticsArgIndex + 1] : ''
+if (SEMANTICS_COMMAND && SEMANTICS_COMMAND !== 'check') {
+  process.stderr.write(`错误：未知 semantics 命令：${SEMANTICS_COMMAND}（仅支持 check）。\n`)
+  process.exit(1)
+}
+const RULE_PROFILE = profileArgIndex >= 0 ? args[profileArgIndex + 1] : 'standard'
+if (!['minimal', 'standard', 'strict'].includes(RULE_PROFILE)) {
+  process.stderr.write(`错误：未知 profile：${RULE_PROFILE}（仅支持 minimal、standard、strict）。\n`)
+  process.exit(1)
+}
 const ROOT = path.resolve(rootArgIndex >= 0 ? args[rootArgIndex + 1] : process.cwd())
 const RULE_DIR = path.join(ROOT, '.agent-rules')
 const VERIFY_ONLY = args.includes('--verify')
+const DIFF_ONLY = args.includes('--diff')
+const DOCTOR_ONLY = args.includes('--doctor')
+const MIGRATE = args.includes('--migrate')
 const ENRICH = args.includes('--enrich')
 const ENRICH_CONTINUE = ENRICH && args.includes('--continue')
-const STRICT = args.includes('--strict') || ENRICH_CONTINUE
-const NON_INTERACTIVE = args.includes('--defaults') || ENRICH
+const STRICT = args.includes('--strict') || ENRICH_CONTINUE || RULE_PROFILE === 'strict'
+const NON_INTERACTIVE = args.includes('--defaults') || ENRICH || MIGRATE
 const SHOW_HELP = args.includes('--help') || args.includes('-h')
 const NOW = new Date()
 const VERIFIED_AT = NOW.toISOString().slice(0, 10)
@@ -221,7 +244,7 @@ function hashFile(file) {
 }
 
 module.exports = {
-  PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, VERIFY_ONLY, STRICT,
+  PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, RULE_PROFILE, SEMANTICS_COMMAND, VERIFY_ONLY, DIFF_ONLY, DOCTOR_ONLY, MIGRATE, STRICT,
   NON_INTERACTIVE, SHOW_HELP, ENRICH, ENRICH_CONTINUE, NOW, VERIFIED_AT, TIMESTAMP, EXISTING_MANIFEST,
   GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, ENRICH_TASK_FILE,
   ENRICH_SCHEMA_FILE, ENRICH_CANDIDATE_FILE, ENRICH_SKILL_FILE,

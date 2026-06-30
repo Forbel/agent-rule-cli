@@ -1,0 +1,6 @@
+{
+  "name": "fixture-express-api",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}

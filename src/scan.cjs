@@ -4,6 +4,7 @@ const {
   ROOT, warn, exists, read, readJson, run, addFact, factValue,
   listFiles, firstExisting, packageDependencies
 } = require('./context.cjs')
+const { runScannerAdapters } = require('./scanners/index.cjs')
 
 function scanProjectIdentity() {
   const pkg = readJson('package.json')
@@ -105,6 +106,7 @@ function scanDirectories() {
     const value = firstExisting(candidates, 'dir')
     if (value) addFact(id, id === 'dir.tests' ? 'testingGit' : 'architecture', value, 'confirmed', 'filesystem', value)
   }
+  runScannerAdapters('directories')
   scanJavaBackendDirectories()
   scanPythonBackendDirectories()
 }
@@ -544,6 +546,18 @@ function collectDomainMap(pageDir, apiDir, featureDir, stateDir, componentsDir) 
   const domains = []
   const seen = new Set()
   const pageExt = /\.(jsx?|tsx?|vue|svelte)$/
+  const appRouterFileNames = new Set(['page', 'layout', 'template', 'loading', 'error', 'global-error', 'not-found', 'default', 'route'])
+  const isAppRouter = pageDir && (pageDir === 'app' || pageDir.endsWith('/app')) && exists(pageDir)
+  const isAppRouterSegmentNoise = name => {
+    if (!isAppRouter) return false
+    if (name === 'api') return true
+    return /^\(.+\)$/.test(name) || /^\[.*\]$/.test(name)
+  }
+  const isAppRouterFileNoise = name => {
+    if (!isAppRouter) return false
+    const base = name.replace(pageExt, '')
+    return appRouterFileNames.has(base)
+  }
   const addDomain = (name, root, kind) => {
     const key = `${kind}:${name}`
     if (seen.has(key)) return
@@ -558,8 +572,9 @@ function collectDomainMap(pageDir, apiDir, featureDir, stateDir, componentsDir) 
   if (pageDir && exists(pageDir)) {
     for (const entry of fs.readdirSync(path.join(ROOT, pageDir), { withFileTypes: true })) {
       if (entry.name.startsWith('.') || entry.name.startsWith('_')) continue
+      if (isAppRouterSegmentNoise(entry.name)) continue
       if (entry.isDirectory()) addDomain(entry.name, path.join(pageDir, entry.name), 'page')
-      else if (pageExt.test(entry.name)) addDomain(entry.name.replace(pageExt, ''), path.join(pageDir, entry.name), 'page')
+      else if (pageExt.test(entry.name) && !isAppRouterFileNoise(entry.name)) addDomain(entry.name.replace(pageExt, ''), path.join(pageDir, entry.name), 'page')
     }
   }
   domains.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind.localeCompare(b.kind)))

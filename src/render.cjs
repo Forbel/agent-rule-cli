@@ -1,7 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const {
-  PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, NOW, VERIFIED_AT, TIMESTAMP,
+  PACKAGE, COMMAND, SHARED_TEMPLATE_DIR, ROOT, RULE_DIR, RULE_PROFILE, NOW, VERIFIED_AT, TIMESTAMP,
   GENERATED_ARTIFACTS, SEMANTICS_FILE, SEMANTIC_SKILL_FILE, MODULES, PROJECT_SCOPES,
   COMMON_SHARED_TEMPLATES, FRONTEND_SHARED_TEMPLATES, BACKEND_SHARED_TEMPLATES,
   COVERAGE_CATALOG, BUSINESS_CONTRACT_FACTS,
@@ -146,6 +146,14 @@ function projectScope() {
 }
 
 function selectedSharedTemplates(scope = projectScope()) {
+  if (RULE_PROFILE === 'minimal') {
+    return [
+      'shared-code-quality.md',
+      'shared-git-delivery.md',
+      'shared-project-requirements-check.md',
+      'shared-testing-quality-gates.md'
+    ]
+  }
   const templates = [...COMMON_SHARED_TEMPLATES]
   if (scope === 'frontend' || scope === 'fullstack') templates.push(...FRONTEND_SHARED_TEMPLATES)
   if (scope === 'backend' || scope === 'fullstack') templates.push(...BACKEND_SHARED_TEMPLATES)
@@ -166,28 +174,33 @@ function renderStatusLines(modules) {
 }
 
 function renderRuleCatalog(scope) {
+  const minimal = RULE_PROFILE === 'minimal'
   const rows = [
     ['`project-summary.md`', '快速了解项目类型、技术栈和模块覆盖状态；正式决策仍以具体规则和 `project-facts.json` 为准。'],
     ['`project-custom.md`', '人工维护的项目例外、已确认特殊规则；任务开始默认读取。'],
     ['`project-architecture.md`', '架构、目录、入口、路由、模块边界和新增目录决策。'],
-    ['`project-code-quality.md`', '代码质量、复用、抽象、模型/转换位置和重构边界。'],
-    ['`project-code-inventory.md`', '查找已有入口、组件、后端代表文件和代码资产。'],
-    ['`project-reuse-candidates.md`', '新增同类能力前检查跨域共享资产，避免重复造轮子。']
+    ['`project-code-quality.md`', '代码质量、复用、抽象、模型/转换位置和重构边界。']
   ]
-  if (scope !== 'backend') rows.push(['`project-ui-rules.md`', 'UI、组件、样式、交互、表单、视觉验收和可访问性。'])
-  rows.push(
-    ['`project-api-error-handling.md`', '接口调用、错误处理、登录失效、权限不足、重试和请求生命周期。'],
-    ['`project-state-data-flow.md`', '状态管理、持久化、跨页面传递、服务端权威数据和异步一致性。'],
-    ['`project-security-performance.md`', '敏感信息、权限边界、资源路径、上传、缓存、并发和性能。']
-  )
-  if (scope !== 'frontend') {
+  if (!minimal) {
     rows.push(
-      ['`project-backend-api-contracts.md`', '后端接口契约、入参校验、响应结构、服务层错误和版本兼容。'],
-      ['`project-backend-data-persistence.md`', '数据库、事务、迁移、回填、缓存一致性和数据修复。'],
-      ['`project-backend-auth-security.md`', '后端鉴权、租户/组织隔离、审计、敏感数据和服务间调用。'],
-      ['`project-backend-jobs-messaging.md`', '定时任务、队列、重试、死信、补偿和幂等。'],
-      ['`project-backend-observability.md`', '后端日志、指标、链路追踪、告警和值班诊断。']
+      ['`project-code-inventory.md`', '查找已有入口、组件、后端代表文件和代码资产。'],
+      ['`project-reuse-candidates.md`', '新增同类能力前检查跨域共享资产，避免重复造轮子。']
     )
+    if (scope !== 'backend') rows.push(['`project-ui-rules.md`', 'UI、组件、样式、交互、表单、视觉验收和可访问性。'])
+    rows.push(
+      ['`project-api-error-handling.md`', '接口调用、错误处理、登录失效、权限不足、重试和请求生命周期。'],
+      ['`project-state-data-flow.md`', '状态管理、持久化、跨页面传递、服务端权威数据和异步一致性。'],
+      ['`project-security-performance.md`', '敏感信息、权限边界、资源路径、上传、缓存、并发和性能。']
+    )
+    if (scope !== 'frontend') {
+      rows.push(
+        ['`project-backend-api-contracts.md`', '后端接口契约、入参校验、响应结构、服务层错误和版本兼容。'],
+        ['`project-backend-data-persistence.md`', '数据库、事务、迁移、回填、缓存一致性和数据修复。'],
+        ['`project-backend-auth-security.md`', '后端鉴权、租户/组织隔离、审计、敏感数据和服务间调用。'],
+        ['`project-backend-jobs-messaging.md`', '定时任务、队列、重试、死信、补偿和幂等。'],
+        ['`project-backend-observability.md`', '后端日志、指标、链路追踪、告警和值班诊断。']
+      )
+    }
   }
   rows.push(
     ['`project-testing-quality-gates.md`', '测试策略、风险分级、核心链路、手动回归和剩余风险。'],
@@ -237,30 +250,35 @@ function ensureSemanticsStore() {
 
 function renderIndex() {
   const scope = projectScope()
+  const minimal = RULE_PROFILE === 'minimal'
   const routeLines = [
     '- 架构、目录、路由/入口新增：`project-architecture.md`、`project-code-quality.md`、`shared-code-quality.md`。'
   ]
-  if (scope !== 'backend') routeLines.push('- UI、组件、样式、交互：`project-ui-rules.md`、`project-architecture.md`、`shared-ui-rules.md`。')
-  routeLines.push(
-    '- API、错误、登录失效、权限：`project-api-error-handling.md`、`project-security-performance.md`、`project-state-data-flow.md` 及对应 shared 文件。',
-    '- 状态、持久化、跨边界数据：`project-state-data-flow.md`、`project-security-performance.md` 及对应 shared 文件。',
-    '- 安全、性能、资源路径、外部跳转、上传和缓存：`project-security-performance.md`、`project-architecture.md`、`shared-security-performance.md`。'
-  )
-  if (scope !== 'frontend') {
+  if (!minimal && scope !== 'backend') routeLines.push('- UI、组件、样式、交互：`project-ui-rules.md`、`project-architecture.md`、`shared-ui-rules.md`。')
+  if (!minimal) {
     routeLines.push(
-      '- 后端接口、入参校验、响应契约、服务层错误：`project-backend-api-contracts.md`、`project-api-error-handling.md`、`shared-backend-api-contracts.md`。',
-      '- 数据库、事务、迁移、缓存一致性：`project-backend-data-persistence.md`、`project-state-data-flow.md`、`shared-backend-data-persistence.md`。',
-      '- 后端鉴权、租户隔离、审计和敏感数据：`project-backend-auth-security.md`、`project-security-performance.md`、`shared-backend-auth-security.md`。',
-      '- 队列、定时任务、重试、死信和补偿：`project-backend-jobs-messaging.md`、`project-state-data-flow.md`、`shared-backend-jobs-messaging.md`。',
-      '- 日志、指标、链路追踪、告警和值班诊断：`project-backend-observability.md`、`project-testing-quality-gates.md`、`shared-backend-observability.md`。'
+      '- API、错误、登录失效、权限：`project-api-error-handling.md`、`project-security-performance.md`、`project-state-data-flow.md` 及对应 shared 文件。',
+      '- 状态、持久化、跨边界数据：`project-state-data-flow.md`、`project-security-performance.md` 及对应 shared 文件。',
+      '- 安全、性能、资源路径、外部跳转、上传和缓存：`project-security-performance.md`、`project-architecture.md`、`shared-security-performance.md`。'
     )
+    if (scope !== 'frontend') {
+      routeLines.push(
+        '- 后端接口、入参校验、响应契约、服务层错误：`project-backend-api-contracts.md`、`project-api-error-handling.md`、`shared-backend-api-contracts.md`。',
+        '- 数据库、事务、迁移、缓存一致性：`project-backend-data-persistence.md`、`project-state-data-flow.md`、`shared-backend-data-persistence.md`。',
+        '- 后端鉴权、租户隔离、审计和敏感数据：`project-backend-auth-security.md`、`project-security-performance.md`、`shared-backend-auth-security.md`。',
+        '- 队列、定时任务、重试、死信和补偿：`project-backend-jobs-messaging.md`、`project-state-data-flow.md`、`shared-backend-jobs-messaging.md`。',
+        '- 日志、指标、链路追踪、告警和值班诊断：`project-backend-observability.md`、`project-testing-quality-gates.md`、`shared-backend-observability.md`。'
+      )
+    }
   }
   routeLines.push(
     '- 测试、构建、交付：`project-testing-quality-gates.md`、`project-git-delivery.md` 及对应 shared 文件。',
     '- Git：`project-git-delivery.md`、`shared-git-delivery.md`。',
     '- 业务：`project-business-rules.md`、`project-domain-map.md`、`project-semantics.json` 及权威业务文档。',
     '- 业务语义（状态、枚举、金额、权限、流转）：按 `semantic-workflow.md` 执行——先查 `project-semantics.json` 对应域条目，缺失或过期时按任务实际业务整理后写回，高风险语义须人工确认（status=user-confirmed）再据此实现。',
-    '- 代码资产、复用判断、抽象和重构审查：`project-code-inventory.md`、`project-reuse-candidates.md`、`project-domain-map.md`、`project-code-quality.md`、`shared-code-quality.md`。',
+    minimal
+      ? '- 代码资产、复用判断、抽象和重构审查：`project-domain-map.md`、`project-code-quality.md`、`shared-code-quality.md`。'
+      : '- 代码资产、复用判断、抽象和重构审查：`project-code-inventory.md`、`project-reuse-candidates.md`、`project-domain-map.md`、`project-code-quality.md`、`shared-code-quality.md`。',
     '- 规则维护：读取待修改 project 文件、对应 shared 文件、`project-facts.json`、相关事实来源和 `shared-project-requirements-check.md`。'
   )
   const sharedList = selectedSharedTemplates(scope).map(file => `\`${file}\``).join('、')
@@ -268,7 +286,7 @@ function renderIndex() {
 
 本文件是轻量入口。shared 是跨项目通用底线，project 是当前项目事实、策略和例外。
 
-项目侧重：${PROJECT_SCOPES[scope]}。当前生成的 shared 模板：${sharedList}。
+项目侧重：${PROJECT_SCOPES[scope]}。规则 profile：${RULE_PROFILE}。当前生成的 shared 模板：${sharedList}。
 
 ## 1. 指令优先级
 
@@ -435,6 +453,7 @@ function renderProjectRules() {
   const testFiles = factValue('testing.files', [])
   const domains = factValue('domain.map', { domains: [], routePaths: [], apiFiles: [], impact: [], sharedAssets: [] })
   const scope = projectScope()
+  const minimal = RULE_PROFILE === 'minimal'
   const isBackendScope = scope === 'backend' || scope === 'fullstack'
   const commandLines = commands.length ? commands.map(command => `- \`${command.name}\`：${command.raw || command.source || '检测自项目配置'}；类别：${command.category}；改写源码：${command.writesSource ? '是' : '否'}；写入产物：${command.writesArtifacts ? '是' : '否'}；写入缓存：${command.writesCache ? '是' : '否'}；长期运行：${command.longRunning ? '是' : '否'}；适合自动执行：${command.safeForAutomaticExecution ? '是' : '否'}`).join('\n') : '- 未检测到验证命令。'
   const gitUnavailableNote = factValue('git.repository', true) === false
@@ -515,7 +534,7 @@ ${backendDirs.length ? backendDirs.map(([id, dir]) => `- ${id}：\`${dir}\``).jo
 ## 后端代表文件
 
 ${backendFiles.length ? backendFiles.map(item => `- ${item.id}：\`${item.file}\``).join('\n') : '- 暂无已确认后端代表文件。'}`
-  write('.agent-rules/project-code-inventory.md', `# 项目代码资产索引
+  if (!minimal) write('.agent-rules/project-code-inventory.md', `# 项目代码资产索引
 
 > 最后核验：${VERIFIED_AT}  
 > 来源：仓库目录扫描
@@ -528,7 +547,7 @@ ${sourceFact('api.entry', '统一请求入口')}
 ${sourceFact('auth.guardEntry', '认证 / 路由守卫')}
 ${sourceFact('state.directory', '状态目录')}`)
 
-  write('.agent-rules/project-reuse-candidates.md', `# 项目复用候选索引
+  if (!minimal) write('.agent-rules/project-reuse-candidates.md', `# 项目复用候选索引
 
 > 最后核验：${VERIFIED_AT}
 > 来源：按 \`import\` 引用统计的跨域共享资产；仅证明被多个域使用，复用前仍需确认语义契合。
@@ -541,7 +560,7 @@ ${(() => {
   return `以下资产已被多个域复用，新增同类能力前应优先复用，不要重造：\n\n${lines.join('\n')}`
 })()}`)
 
-  if (scope !== 'backend') write('.agent-rules/project-ui-rules.md', `# 项目 UI 规则
+  if (!minimal && scope !== 'backend') write('.agent-rules/project-ui-rules.md', `# 项目 UI 规则
 
 ${metadata('ui')}
 
@@ -557,7 +576,7 @@ ${sourceFact('policy.uiVerification', 'UI 验证')}
 
 先检查既有页面和组件；只有新增产品语义、视觉规范冲突或不可逆交互时才询问。`)
 
-  write('.agent-rules/project-api-error-handling.md', `# 项目 API 与错误处理规则
+  if (!minimal) write('.agent-rules/project-api-error-handling.md', `# 项目 API 与错误处理规则
 
 ${metadata('api')}
 
@@ -596,7 +615,7 @@ ${sourceFact('policy.apiObservability', 'API 可观测性与脱敏')}
 
 若当前 403 行为未清理全局状态、未区分权限不足或没有并发单次处理保护，应明确标记为实现差距，不得写成目标规范。`)
 
-  if (isBackendScope) {
+  if (!minimal && isBackendScope) {
     write('.agent-rules/project-backend-api-contracts.md', `# 项目后端 API 契约规则
 
 ${metadata('api')}
@@ -703,7 +722,7 @@ ${sourceFact('policy.testBoundaries', '边界场景与剩余风险')}
 后端交付说明应记录执行过的接口/任务/数据库/消息验证、未覆盖的环境依赖和剩余风险；日志、指标和链路追踪不得包含敏感数据或高基数字段。`)
   }
 
-  write('.agent-rules/project-state-data-flow.md', `# 项目状态与数据流规则
+  if (!minimal) write('.agent-rules/project-state-data-flow.md', `# 项目状态与数据流规则
 
 ${metadata('state')}
 
@@ -719,7 +738,7 @@ ${sourceFact('policy.asyncState', '异步一致性与数据阶段')}
 
 异步一致性问题先检查现有调用链和状态模块；只有新增业务语义、事实冲突或不可恢复选择时询问。`)
 
-  write('.agent-rules/project-security-performance.md', `# 项目安全与性能规则
+  if (!minimal) write('.agent-rules/project-security-performance.md', `# 项目安全与性能规则
 
 ${metadata('security')}
 
@@ -849,6 +868,7 @@ function renderFacts() {
     staleAfterDays: 30,
     projectRoot: '.',
     projectScope: projectScope(),
+    ruleProfile: RULE_PROFILE,
     sharedTemplates: selectedSharedTemplates(),
     modules,
     facts: facts.sort((a, b) => a.id.localeCompare(b.id)),
